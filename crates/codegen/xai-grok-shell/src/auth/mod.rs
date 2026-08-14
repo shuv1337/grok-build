@@ -1,3 +1,4 @@
+pub mod anthropic;
 pub(crate) mod api_key_probe;
 pub(crate) mod attribution;
 mod auth_provider;
@@ -13,6 +14,9 @@ mod jwt;
 pub(crate) mod manager;
 mod model;
 pub mod oidc;
+pub mod openai_codex;
+pub mod pkce_loopback;
+pub mod providers;
 pub(crate) mod recovery;
 pub(crate) mod refresh;
 pub(crate) mod single_flight;
@@ -41,15 +45,18 @@ pub(crate) use flow::{
 pub use flow::{
     AuthUrlInfo, AuthUrlMode, LoginTransportOverride, LogoutResult, ensure_authenticated,
     ensure_authenticated_or_noninteractive, ensure_authenticated_with_override, perform_logout,
-    run_cli_login, run_cli_logout, try_ensure_fresh_auth,
+    run_cli_login, run_cli_login_with_provider, run_cli_logout, run_cli_logout_with_provider,
+    run_provider_login, try_ensure_fresh_auth,
 };
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration};
 mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::{AuthManager, shared_api_key_provider};
 pub(crate) use manager::{AuthRemedy, SilentRefresh};
-pub use meta::{AuthMeta, GateInfo};
+pub use meta::{AuthMeta, GateInfo, SubscriptionProviderStatus};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub(crate) use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
+pub use providers::registry::AuthRegistry;
+pub use providers::{LiveProviders, ScopeKey, SubscriptionProvider};
 pub(crate) use refresh::DiagnosticUploader;
 pub use storage::{clear_api_key, read_api_key, read_auth_json, store_api_key};

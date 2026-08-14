@@ -983,17 +983,44 @@ impl SessionActor {
                 }
             }
         };
-        let parsed = self
+        let mut function_name = call.function.name.clone();
+        let mut parsed = self
             .tool_bridge_handle()
-            .try_parse(&call.function.name, raw_input.clone())
+            .try_parse(&function_name, raw_input.clone())
             .await;
+        if parsed.is_err() {
+            let canonical_name = match function_name.to_ascii_lowercase().as_str() {
+                "read" => Some("read_file"),
+                "write" => Some("write_file"),
+                "edit" => Some("edit_file"),
+                "bash" => Some("bash"),
+                "grep" => Some("grep"),
+                "glob" => Some("glob"),
+                "askuserquestion" => Some("ask_user_question"),
+                "enterplanmode" => Some("enter_plan_mode"),
+                "exitplanmode" => Some("exit_plan_mode"),
+                "websearch" => Some("web_search"),
+                "webfetch" => Some("web_fetch"),
+                _ => None,
+            };
+            if let Some(target) = canonical_name {
+                let retry_parsed = self
+                    .tool_bridge_handle()
+                    .try_parse(target, raw_input.clone())
+                    .await;
+                if retry_parsed.is_ok() {
+                    function_name = target.to_string();
+                    parsed = retry_parsed;
+                }
+            }
+        }
         let mut tool_input = match parsed {
             Ok(input) => input,
             Err(err) => {
                 self.handle_tool_parse_error(
                     &tool_call_id,
                     &call.id,
-                    &call.function.name,
+                    &function_name,
                     err,
                     &call.function.arguments,
                     &model_id_str,

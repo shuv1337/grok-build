@@ -1,6 +1,6 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
+Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), headless CI/CD runners, and subscription sign-in to alternative model providers (Anthropic Claude, OpenAI Codex).
 
 ---
 
@@ -34,10 +34,85 @@ Running `grok login` starts the sign-in flow again, replacing your cached sessio
 
 | Flag | Description |
 |------|-------------|
+| `--provider <id>` | Choose which provider to sign in to: `xai` (default), `anthropic`, or `openai-codex`. Omitting it on an interactive terminal shows a picker. |
 | `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
-| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
+| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. Supported for `xai` and `openai-codex`. |
 
-To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
+To sign out, run `grok logout`. Pass `--provider <id>` to sign out of a single
+provider; without it, the xAI session is cleared.
+
+---
+
+## Alternative Providers (Claude Pro/Max, ChatGPT Plus/Pro)
+
+Grok can talk to Anthropic and OpenAI using **your existing consumer
+subscription** instead of a metered API key. Each provider is a first-class
+login that lives beside your xAI credential in `~/.grok/auth.json`, under its
+own scope key (`anthropic::oauth`, `openai-codex::oauth`). Signing in to one
+never disturbs the others.
+
+### Sign in
+
+```bash
+grok login --provider anthropic       # Claude Pro / Max
+grok login --provider openai-codex    # ChatGPT Plus / Pro
+```
+
+Both open your browser and complete an OAuth 2.0 PKCE flow. If the browser
+cannot reach the CLI (remote VM, SSH), paste the callback URL — or just the
+authorization code — back into the terminal; Grok races the loopback listener
+against your paste and takes whichever arrives first.
+
+ChatGPT also supports a fully headless device flow:
+
+```bash
+grok login --provider openai-codex --device-auth
+```
+
+Inside the TUI, `/login` presents the same provider picker.
+
+> [!NOTE]
+> These flows use fixed loopback ports (Anthropic `53692`, OpenAI `1455`)
+> because the redirect URIs are pre-registered with each provider. If the port
+> is already taken, Grok degrades to paste-only capture and tells you which
+> port was busy — login still completes.
+
+### Selecting a model
+
+After signing in, that provider's models appear in `/model` and in
+`grok models`. Until you sign in they remain visible but unselectable, with a
+hint naming the login command. Bundled catalogs cover the current Claude
+(Opus/Sonnet/Haiku) and GPT-5.x Codex families.
+
+### Token refresh
+
+Access tokens refresh transparently in the background and on a mid-request 401.
+Anthropic rotates the **refresh token** on every refresh; Grok persists the
+rotated token and the new access token in the same locked write, so concurrent
+`grok` processes cannot lose a rotation. Credentials are stored with a 5-minute
+early-expiry margin.
+
+### Sign out
+
+```bash
+grok logout --provider anthropic
+grok logout --provider openai-codex
+```
+
+### Billing caveat
+
+Requests are billed against your **subscription plan**, exactly like the
+provider's own CLI. Usage beyond your plan's included limits is billed by the
+provider as token-metered extra usage. Grok shows a one-time notice the first
+time you run a turn on a subscription provider.
+
+### Relationship to BYOK
+
+Bring-your-own-key still works and still wins: a per-model `api_key` or
+`env_key` under `[model.<name>]` takes precedence over a subscription
+credential for that model. See
+[Custom Models](11-custom-models.md). The xAI session token and `XAI_API_KEY`
+are never sent to Anthropic or OpenAI endpoints.
 
 ---
 
@@ -239,6 +314,7 @@ goes to `~/.grok/leader.log` rather than to you.
 | `GROK_AUTH_TOKEN_TTL` | Token lifetime in seconds (for bare-string tokens without `expires_in`) |
 | `GROK_AUTH_EXPIRED` | Set to `1` on a headless refresh: don't prompt, and don't hand back a cached token. Unset on a sign-in, where a user is attached |
 | `GROK_AUTH_EARLY_INVALIDATION_SECS` | Seconds before expiry to proactively refresh (default: 300) |
+| `GROK_OAUTH_LOOPBACK_PORT_OVERRIDE` | Testing only: forces the OAuth loopback listener onto a specific port |
 
 ---
 
@@ -287,8 +363,9 @@ Grok picks up changes to `~/.grok/auth.json` automatically. If you update creden
 Grok resolves credentials for each request in this order, highest to lowest:
 
 1. **Per-model `api_key` or `env_key`** -- set under `[model.<name>]` in `config.toml`. Wins whenever present.
-2. **Active session token** -- obtained through browser, OIDC/OAuth2, or external-provider login and stored in `~/.grok/auth.json`.
-3. **`XAI_API_KEY`** -- fallback when no session token is active.
+2. **Subscription-provider credential** -- for models that belong to Anthropic or OpenAI Codex, the matching OAuth credential from `~/.grok/auth.json`. These models never fall through to the xAI session token or `XAI_API_KEY`.
+3. **Active session token** -- obtained through browser, OIDC/OAuth2, or external-provider login and stored in `~/.grok/auth.json`.
+4. **`XAI_API_KEY`** -- fallback when no session token is active.
 
 When more than one login flow is configured, Grok populates the session token from the first available source, highest to lowest:
 
@@ -358,3 +435,6 @@ RUST_LOG=debug grok -p "hello" 2> /tmp/grok.log
 - **Token expires too quickly** -- Set `auth_token_ttl` or return `expires_in` in your auth provider's JSON output.
 - **OIDC redirect fails** -- Ensure your IdP allows loopback redirect URIs (`http://127.0.0.1/callback`).
 - **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.
+- **Alternative-provider login says the loopback port is busy** -- Anthropic (`53692`) and OpenAI (`1455`) use fixed, pre-registered ports. Free the port, or complete the login by pasting the callback URL / code into the terminal.
+- **"Missing chatgpt_account_id"** -- The OpenAI access token carried no ChatGPT account claim. Confirm the account has an active ChatGPT Plus/Pro subscription, then run `grok login --provider openai-codex` again.
+- **An Anthropic or OpenAI model is listed but not selectable** -- You are not signed in to that provider. Run `grok login --provider anthropic` or `grok login --provider openai-codex`.

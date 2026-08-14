@@ -1046,6 +1046,7 @@ fn test_model_entry(
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            provider: None,
         },
         api_key: api_key.map(|s| s.to_string()),
         env_key: env_key.map(EnvKeys::single),
@@ -2119,6 +2120,7 @@ fn model_info_from_config_propagates_use_concise() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        provider: None,
     };
     let info = ModelInfo::from_config(&entry);
     assert!(info.use_concise);
@@ -2278,6 +2280,7 @@ fn model_info_from_config_propagates_agent_type() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        provider: None,
     };
     let info = ModelInfo::from_config(&entry);
     assert_eq!(info.agent_type, "codex");
@@ -2500,7 +2503,7 @@ fn hidden_model_excluded_from_acp_but_kept_in_catalog() {
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw_config).unwrap();
     let catalog = resolve_model_catalog(&cfg, None);
-    let available = available_models(&catalog, true);
+    let available = available_models(&catalog, true, crate::auth::LiveProviders::default());
     assert!(
         catalog.contains_key("visible-model"),
         "visible model missing from catalog"
@@ -2550,7 +2553,7 @@ fn hidden_models_kept_in_catalog_but_not_in_acp() {
     )
     .unwrap();
     let catalog = resolve_model_catalog(&Config::new_from_toml_cfg(&raw).unwrap(), None);
-    let available = available_models(&catalog, true);
+    let available = available_models(&catalog, true, crate::auth::LiveProviders::default());
     assert!(catalog.contains_key("to-hide"));
     assert!(catalog["to-hide"].info.hidden);
     assert!(!available.values().any(|m| m.name == "to-hide"));
@@ -2650,10 +2653,10 @@ fn supported_in_api_false_hides_from_api_key_users() {
     let catalog = resolve_model_catalog(&cfg, None);
     assert!(catalog.contains_key("oauth-only-model"));
     assert!(catalog.contains_key("public-model"));
-    let api_available = available_models(&catalog, false);
+    let api_available = available_models(&catalog, false, crate::auth::LiveProviders::default());
     assert!(!api_available.values().any(|m| m.name == "oauth-only-model"));
     assert!(api_available.values().any(|m| m.name == "public-model"));
-    let oauth_available = available_models(&catalog, true);
+    let oauth_available = available_models(&catalog, true, crate::auth::LiveProviders::default());
     assert!(
         oauth_available
             .values()
@@ -2729,6 +2732,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        provider: None,
     };
     let info = ModelInfo::from_config(&entry);
     assert_eq!(info.inference_idle_timeout_secs, Some(120));
@@ -6631,6 +6635,156 @@ fn slug_propagation_noop_when_no_donor() {
         "no donor exists, context_window should stay at parser default"
     );
 }
+/// Subscription-provider models are gated on *their own* credential, not on
+/// the xAI session token. Keying them off `is_session_auth` was wrong in both
+/// directions: Claude models appeared for an xAI user who had never signed in
+/// to Anthropic, and stayed hidden for an `XAI_API_KEY` user who had — the
+/// reported "models don't show up after login".
+#[test]
+fn subscription_models_are_gated_on_their_own_provider_credential() {
+    use crate::auth::{LiveProviders, SubscriptionProvider};
+
+    let claude = {
+        let mut info = ModelInfo::fallback("claude-sonnet-5");
+        info.provider = Some(SubscriptionProvider::Anthropic);
+        info.supported_in_api = false;
+        info
+    };
+    let codex = {
+        let mut info = ModelInfo::fallback("gpt-5.6-luna");
+        info.provider = Some(SubscriptionProvider::OpenaiCodex);
+        info.supported_in_api = false;
+        info
+    };
+    let xai = {
+        let mut info = ModelInfo::fallback("grok-4.6");
+        info.supported_in_api = false;
+        info
+    };
+
+    let none = LiveProviders::default();
+    let anthropic_only = LiveProviders::from_parts(true, false);
+    let both = LiveProviders::from_parts(true, true);
+
+    // Signed in to Anthropic but on an API key: Claude must be visible.
+    assert!(
+        claude.visible_for_auth(false, anthropic_only),
+        "an API-key user signed in to Anthropic must see Claude models"
+    );
+    // ...and Codex must not be, since that provider is not signed in.
+    assert!(
+        !codex.visible_for_auth(false, anthropic_only),
+        "Codex must stay hidden until its own provider is signed in"
+    );
+    assert!(codex.visible_for_auth(false, both));
+
+    // An xAI session alone does not unlock a provider the user never joined.
+    assert!(
+        !claude.visible_for_auth(true, none),
+        "an xAI session must not reveal Claude models on its own"
+    );
+
+    // xAI models keep the original session-auth semantics exactly.
+    assert!(xai.visible_for_auth(true, none));
+    assert!(!xai.visible_for_auth(false, none));
+
+    // A per-model BYOK key is still an independent way in.
+    let mut byok_claude = claude.clone();
+    byok_claude.supported_in_api = true;
+    assert!(byok_claude.visible_for_auth(false, none));
+
+    // `hidden` still wins over everything.
+    let mut hidden_claude = claude.clone();
+    hidden_claude.hidden = true;
+    assert!(!hidden_claude.visible_for_auth(true, both));
+}
+
+/// Regression: the remote xAI catalog replaces the built-in defaults wholesale
+/// (`resolved = prefetched`). Subscription-provider models are a disjoint
+/// namespace the remote list cannot know about — those backends expose no list
+/// endpoint — so they must survive that replacement. Without the carry-across,
+/// every Claude / Codex model vanished from `/model` and `grok models` the
+/// moment the user was signed in to xAI.
+#[test]
+fn subscription_provider_models_survive_remote_catalog_replacement() {
+    let cfg = Config::new_from_toml_cfg(&toml::Value::Table(Default::default()))
+        .expect("empty config parses");
+
+    // Sanity: the built-in catalog carries subscription-provider entries.
+    let defaults = resolve_model_list(&cfg, None);
+    let default_provider_keys: Vec<&String> = defaults
+        .iter()
+        .filter(|(_, e)| {
+            e.info
+                .provider
+                .is_some_and(|p| p != crate::auth::SubscriptionProvider::Xai)
+        })
+        .map(|(k, _)| k)
+        .collect();
+    assert!(
+        !default_provider_keys.is_empty(),
+        "built-in catalog should ship subscription-provider models"
+    );
+
+    // A remote catalog that knows only about xAI models.
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "grok-4.6".to_string(),
+        prefetch_model_entry("grok-4.6", 500_000, ApiBackend::Responses),
+    );
+
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+
+    assert!(
+        resolved.contains_key("grok-4.6"),
+        "remote xAI entry must be present"
+    );
+    for key in &default_provider_keys {
+        assert!(
+            resolved.contains_key(key.as_str()),
+            "subscription-provider model {key} must survive the remote replacement"
+        );
+    }
+    let anthropic = resolved
+        .values()
+        .find(|e| e.info.provider == Some(crate::auth::SubscriptionProvider::Anthropic))
+        .expect("an Anthropic model should survive");
+    assert_eq!(anthropic.info.api_backend, ApiBackend::Messages);
+    let codex = resolved
+        .values()
+        .find(|e| e.info.provider == Some(crate::auth::SubscriptionProvider::OpenaiCodex))
+        .expect("an OpenAI Codex model should survive");
+    assert_eq!(codex.info.api_backend, ApiBackend::Responses);
+}
+
+/// A remote entry that collides on key with a carried provider model wins:
+/// the remote catalog stays authoritative for anything it does describe.
+#[test]
+fn remote_catalog_entry_wins_over_carried_provider_model() {
+    let cfg = Config::new_from_toml_cfg(&toml::Value::Table(Default::default()))
+        .expect("empty config parses");
+    let defaults = resolve_model_list(&cfg, None);
+    let (claude_key, _) = defaults
+        .iter()
+        .find(|(_, e)| e.info.provider == Some(crate::auth::SubscriptionProvider::Anthropic))
+        .expect("an Anthropic model exists in the built-in catalog");
+    let claude_key = claude_key.clone();
+
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        claude_key.clone(),
+        prefetch_model_entry(&claude_key, 123_456, ApiBackend::ChatCompletions),
+    );
+
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved.get(&claude_key).expect("key present");
+    assert_eq!(
+        entry.info.context_window.get(),
+        123_456,
+        "remote entry must win on a key collision"
+    );
+}
+
 /// Build a minimal `ModelEntry` for testing resolve_model_list.
 fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend) -> ModelEntry {
     ModelEntry {
@@ -6665,6 +6819,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            provider: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
         },
@@ -7035,11 +7190,11 @@ fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
     let resolved = resolve_model_list(&cfg, Some(p));
     let sess: Vec<_> = resolved
         .values()
-        .filter(|e| e.visible_for_auth(true))
+        .filter(|e| e.visible_for_auth(true, crate::auth::LiveProviders::default()))
         .collect();
     let api: Vec<_> = resolved
         .values()
-        .filter(|e| e.visible_for_auth(false))
+        .filter(|e| e.visible_for_auth(false, crate::auth::LiveProviders::default()))
         .collect();
     assert_eq!(sess.len(), 1);
     assert_eq!(api.len(), 1);
@@ -7066,11 +7221,39 @@ fn resolve_model_list_prefetch_replaces_bundled_entirely() {
     assert!(resolved.contains_key("other-model"));
     assert!(!resolved.contains_key(dm));
 }
+/// A prefetched catalog replaces the bundled **xAI** models entirely — an
+/// empty remote list means no xAI models, not "fall back to bundled".
+///
+/// Subscription-provider entries are deliberately exempt: the remote list is
+/// the xAI catalog and cannot describe them (those backends expose no list
+/// endpoint), so an empty or transiently-degraded response must not erase the
+/// user's Claude/Codex models. This narrows the previous
+/// "prefetch replaces everything" invariant.
 #[test]
-fn resolve_model_list_empty_prefetch_yields_empty_base() {
+fn resolve_model_list_empty_prefetch_drops_xai_but_keeps_subscription_models() {
     let cfg = Config::default();
     let resolved = resolve_model_list(&cfg, Some(IndexMap::new()));
-    assert!(resolved.is_empty());
+
+    assert!(
+        resolved.values().all(|e| e
+            .info
+            .provider
+            .is_some_and(|p| p != crate::auth::SubscriptionProvider::Xai)),
+        "an empty prefetch must leave no xAI models: {:?}",
+        resolved.keys().collect::<Vec<_>>()
+    );
+
+    let providers_enabled = crate::auth::SubscriptionProvider::Anthropic.is_enabled();
+    if providers_enabled {
+        assert!(
+            resolved
+                .values()
+                .any(|e| e.info.provider == Some(crate::auth::SubscriptionProvider::Anthropic)),
+            "subscription models must survive an empty remote catalog"
+        );
+    } else {
+        assert!(resolved.is_empty());
+    }
 }
 /// Regression: enterprise managed config overlays env_key on an oauth-only
 /// catalog entry. BYOK must force visibility for API-key users so a
@@ -7096,7 +7279,7 @@ fn byok_config_overlay_visible_to_api_key_users() {
         .get("enterprise-alias")
         .expect("enterprise-alias must exist");
     assert!(
-        entry.visible_for_auth(false),
+        entry.visible_for_auth(false, crate::auth::LiveProviders::default()),
         "BYOK config entry must be visible to API-key users — \
          env_key must override base supported_in_api=false"
     );
@@ -7121,13 +7304,13 @@ fn plain_config_overlay_preserves_bundled_visibility() {
     let resolved = resolve_model_list(&cfg, None);
     let entry = resolved.get(dm).expect("bundled default must exist");
     assert_eq!(
-        entry.visible_for_auth(false),
-        bundled.visible_for_auth(false),
+        entry.visible_for_auth(false, crate::auth::LiveProviders::default()),
+        bundled.visible_for_auth(false, crate::auth::LiveProviders::default()),
         "non-BYOK config overlay must preserve bundled supported_in_api"
     );
     assert_eq!(
-        entry.visible_for_auth(true),
-        bundled.visible_for_auth(true),
+        entry.visible_for_auth(true, crate::auth::LiveProviders::default()),
+        bundled.visible_for_auth(true, crate::auth::LiveProviders::default()),
         "non-BYOK config overlay must preserve bundled OAuth visibility"
     );
 }

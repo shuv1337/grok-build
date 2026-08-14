@@ -3541,7 +3541,30 @@ pub(crate) fn resolve_model_list(
                 tracing::debug!(model_key = %key, "prefetched model overriding default");
             }
         }
+        // The remote catalog is authoritative for xAI, and replaces the
+        // built-in defaults wholesale. Subscription-provider models are a
+        // disjoint namespace the remote list cannot know about (those
+        // backends expose no list endpoint), so carry them across the
+        // replacement. A same-key remote entry still wins.
+        let carried: Vec<(String, ModelEntry)> = resolved
+            .iter()
+            .filter(|(key, entry)| {
+                entry
+                    .info
+                    .provider
+                    .is_some_and(|p| p != crate::auth::SubscriptionProvider::Xai)
+                    && !prefetched.contains_key(*key)
+            })
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .collect();
+        if !carried.is_empty() {
+            tracing::debug!(
+                count = carried.len(),
+                "carrying subscription-provider models across remote catalog replacement"
+            );
+        }
         resolved = prefetched;
+        resolved.extend(carried);
     }
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
@@ -3570,9 +3593,17 @@ pub(crate) fn resolve_model_list(
                 .api_base_url
                 .as_deref()
                 .is_some_and(|url| !crate::util::is_xai_api_bearer_url(url));
+        let is_subscription_provider = entry.info.provider.is_some_and(|p| {
+            matches!(
+                p,
+                crate::auth::SubscriptionProvider::Anthropic
+                    | crate::auth::SubscriptionProvider::OpenaiCodex
+            )
+        });
         if let Some(pid) = model_override.model_provider.as_deref()
             && entry.auth_provider.is_none()
             && session_bearer_unsafe
+            && !is_subscription_provider
         {
             entry.auth_provider = Some(crate::auth::AuthProviderRef::fail_closed(format!(
                 "model_provider:{pid} (fail-closed)"
@@ -3781,8 +3812,13 @@ struct DefaultModelJson {
     auto_compact_threshold_percent: Option<u8>,
     #[serde(default)]
     system_prompt_label: Option<String>,
+    #[serde(default)]
+    provider: Option<crate::auth::SubscriptionProvider>,
 }
 fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryConfig> {
+    let mut map = IndexMap::new();
+
+    // 1. Default xAI models
     let root: serde_json::Value = serde_json::from_str(crate::models::DEFAULT_MODELS_JSON)
         .expect("default_models.json: invalid JSON");
     let entries: Vec<DefaultModelJson> = serde_json::from_value(
@@ -3795,55 +3831,188 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
         count = entries.len(),
         "loaded default models from embedded JSON"
     );
-    entries
-        .into_iter()
-        .map(|m| {
-            assert!(
-                !m.model.is_empty(),
-                "default_models.json: entry id={:?} has empty `model` field",
-                m.id
-            );
+    for m in entries {
+        assert!(
+            !m.model.is_empty(),
+            "default_models.json: entry id={:?} has empty `model` field",
+            m.id
+        );
+        let key = m.id.clone().unwrap_or_else(|| m.model.clone());
+        let context_window = m
+            .context_window
+            .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
+        let config = ModelEntryConfig {
+            id: m.id,
+            model: m.model,
+            base_url: endpoints.resolve_inference_base_url(),
+            api_base_url: Some(endpoints.xai_api_base_url.clone()),
+            name: m.name,
+            description: m.description,
+            context_window,
+            auto_compact_threshold_percent: m.auto_compact_threshold_percent,
+            system_prompt_label: m.system_prompt_label,
+            temperature: m.temperature,
+            top_p: m.top_p,
+            max_completion_tokens: m.max_completion_tokens,
+            api_backend: m.api_backend,
+            auth_scheme: None,
+            agent_type: m.agent_type,
+            inference_idle_timeout_secs: m.inference_idle_timeout_secs,
+            max_retries: None,
+            api_key: None,
+            env_key: None,
+            extra_headers: IndexMap::new(),
+            use_concise: false,
+            hidden: m.hidden,
+            supported_in_api: m.supported_in_api,
+            reasoning_effort: m.reasoning_effort,
+            supports_reasoning_effort: m.supports_reasoning_effort,
+            reasoning_efforts: m.reasoning_efforts,
+            supports_backend_search: m.supports_backend_search,
+            compactions_remaining: m.compactions_remaining,
+            compaction_at_tokens: m.compaction_at_tokens,
+            show_model_fingerprint: m.show_model_fingerprint,
+            stream_tool_calls: None,
+            laziness_detector: LazinessDetectorPerModelConfig::default(),
+            provider: m.provider,
+        };
+        map.insert(key, config);
+    }
+
+    // 2. Third-party subscription providers (Anthropic, OpenAI Codex).
+    for (key, config) in subscription_provider_models() {
+        map.insert(key, config);
+    }
+
+    map
+}
+
+/// Static wire facts for one subscription provider's catalog. Everything the
+/// thin per-provider JSON deliberately omits lives here, so a provider bump is
+/// a single-site edit alongside its `wire.rs` constants.
+struct ProviderCatalogSpec {
+    provider: crate::auth::SubscriptionProvider,
+    models_json: &'static str,
+    base_url: &'static str,
+    api_backend: ApiBackend,
+    default_context_window: u64,
+    extra_headers: &'static [(&'static str, &'static str)],
+}
+
+/// Built-in catalog entries for every *enabled* subscription provider.
+///
+/// The per-provider JSON stays thin (id, name, context window, reasoning
+/// flags); this fills the endpoint, wire protocol, auth scheme, and the
+/// impersonation headers from `wire.rs`. `supported_in_api: false` keeps these
+/// models out of the picker until the matching provider is signed in.
+fn subscription_provider_models() -> Vec<(String, ModelEntryConfig)> {
+    use crate::auth::SubscriptionProvider;
+    use crate::auth::{anthropic::wire as ant, openai_codex::wire as codex};
+
+    let specs = [
+        ProviderCatalogSpec {
+            provider: SubscriptionProvider::Anthropic,
+            models_json: crate::models::ANTHROPIC_MODELS_JSON,
+            base_url: ant::BASE_URL,
+            api_backend: ApiBackend::Messages,
+            default_context_window: 200_000,
+            extra_headers: &[
+                ("anthropic-version", ant::ANTHROPIC_VERSION),
+                ("anthropic-beta", ant::ANTHROPIC_BETAS),
+                ("x-app", "cli"),
+                ("anthropic-dangerous-direct-browser-access", "true"),
+                ("User-Agent", ant::USER_AGENT),
+            ],
+        },
+        ProviderCatalogSpec {
+            provider: SubscriptionProvider::OpenaiCodex,
+            models_json: crate::models::OPENAI_CODEX_MODELS_JSON,
+            base_url: codex::RESPONSES_BASE_URL,
+            api_backend: ApiBackend::Responses,
+            default_context_window: 272_000,
+            extra_headers: &[
+                ("originator", codex::ORIGINATOR),
+                ("OpenAI-Beta", codex::OPENAI_BETA),
+            ],
+        },
+    ];
+
+    let mut out = Vec::new();
+    for spec in specs {
+        if !spec.provider.is_enabled() {
+            continue;
+        }
+        let entries = match parse_provider_catalog(spec.models_json) {
+            Some(entries) => entries,
+            None => {
+                tracing::warn!(
+                    provider = spec.provider.id(),
+                    "embedded provider catalog is unparseable; skipping"
+                );
+                continue;
+            }
+        };
+        for m in entries {
             let key = m.id.clone().unwrap_or_else(|| m.model.clone());
-            let context_window = m
-                .context_window
-                .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
-            let config = ModelEntryConfig {
-                id: m.id,
-                model: m.model,
-                base_url: endpoints.resolve_inference_base_url(),
-                api_base_url: Some(endpoints.xai_api_base_url.clone()),
-                name: m.name,
-                description: m.description,
-                context_window,
-                auto_compact_threshold_percent: m.auto_compact_threshold_percent,
-                system_prompt_label: m.system_prompt_label,
-                temperature: m.temperature,
-                top_p: m.top_p,
-                max_completion_tokens: m.max_completion_tokens,
-                api_backend: m.api_backend,
-                auth_scheme: None,
-                agent_type: m.agent_type,
-                inference_idle_timeout_secs: m.inference_idle_timeout_secs,
-                max_retries: None,
-                api_key: None,
-                env_key: None,
-                extra_headers: IndexMap::new(),
-                use_concise: false,
-                hidden: m.hidden,
-                supported_in_api: m.supported_in_api,
-                reasoning_effort: m.reasoning_effort,
-                supports_reasoning_effort: m.supports_reasoning_effort,
-                reasoning_efforts: m.reasoning_efforts,
-                supports_backend_search: m.supports_backend_search,
-                compactions_remaining: m.compactions_remaining,
-                compaction_at_tokens: m.compaction_at_tokens,
-                show_model_fingerprint: m.show_model_fingerprint,
-                stream_tool_calls: None,
-                laziness_detector: LazinessDetectorPerModelConfig::default(),
-            };
-            (key, config)
-        })
-        .collect()
+            let context_window = m.context_window.unwrap_or_else(|| {
+                NonZeroU64::new(spec.default_context_window)
+                    .expect("provider default context window is non-zero")
+            });
+            let extra_headers: IndexMap<String, String> = spec
+                .extra_headers
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            out.push((
+                key,
+                ModelEntryConfig {
+                    id: m.id,
+                    model: m.model,
+                    base_url: spec.base_url.to_string(),
+                    api_base_url: None,
+                    name: m.name,
+                    description: m.description,
+                    context_window,
+                    auto_compact_threshold_percent: m.auto_compact_threshold_percent,
+                    system_prompt_label: m.system_prompt_label,
+                    temperature: m.temperature,
+                    top_p: m.top_p,
+                    max_completion_tokens: m.max_completion_tokens,
+                    api_backend: spec.api_backend.clone(),
+                    auth_scheme: Some(AuthScheme::Bearer),
+                    agent_type: m.agent_type,
+                    inference_idle_timeout_secs: m.inference_idle_timeout_secs,
+                    max_retries: None,
+                    api_key: None,
+                    env_key: None,
+                    extra_headers,
+                    use_concise: false,
+                    hidden: m.hidden,
+                    // Gated on a live subscription, never on an API key.
+                    supported_in_api: false,
+                    reasoning_effort: m.reasoning_effort,
+                    supports_reasoning_effort: m.supports_reasoning_effort,
+                    reasoning_efforts: m.reasoning_efforts,
+                    supports_backend_search: m.supports_backend_search,
+                    compactions_remaining: m.compactions_remaining,
+                    compaction_at_tokens: m.compaction_at_tokens,
+                    show_model_fingerprint: m.show_model_fingerprint,
+                    stream_tool_calls: None,
+                    laziness_detector: LazinessDetectorPerModelConfig::default(),
+                    provider: Some(spec.provider),
+                },
+            ));
+        }
+    }
+    out
+}
+
+/// Parse a `{"models": [...]}` provider catalog. `None` on malformed JSON so a
+/// bad embedded catalog degrades to "no models" rather than panicking.
+fn parse_provider_catalog(json: &str) -> Option<Vec<DefaultModelJson>> {
+    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    let models = root.get("models")?;
+    serde_json::from_value::<Vec<DefaultModelJson>>(models.clone()).ok()
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntryConfig {
@@ -3894,6 +4063,9 @@ pub struct ModelEntryConfig {
     /// Example: { "x-anthropic-api-key" = "sk-ant-..." }
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub extra_headers: IndexMap<String, String>,
+    /// Optional subscription provider for first-class third-party models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::auth::SubscriptionProvider>,
     /// The total context window size in tokens for this model.
     /// Used for auto-compact threshold calculations.
     /// Required — BYOK users must explicitly set this in config.toml.
@@ -4030,6 +4202,7 @@ pub struct ConfigModelOverride {
     pub compaction_at_tokens: Option<CompactionAtTokens>,
     pub show_model_fingerprint: Option<bool>,
     pub stream_tool_calls: Option<bool>,
+    pub provider: Option<crate::auth::SubscriptionProvider>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -4124,6 +4297,9 @@ impl ConfigModelOverride {
         if self.stream_tool_calls.is_some() {
             entry.info.stream_tool_calls = self.stream_tool_calls;
         }
+        if self.provider.is_some() {
+            entry.info.provider = self.provider;
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -4217,6 +4393,9 @@ pub struct ModelInfo {
     /// injecting nudges. See [`LazinessDetectorPerModelConfig`].
     #[serde(default)]
     pub laziness_detector: LazinessDetectorPerModelConfig,
+    /// Optional subscription provider for first-class third-party models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::auth::SubscriptionProvider>,
 }
 impl ModelInfo {
     /// Minimal fallback descriptor for an unknown model slug.
@@ -4255,6 +4434,7 @@ impl ModelInfo {
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            provider: None,
         }
     }
     /// Extract shared model metadata from a flat config entry.
@@ -4292,6 +4472,7 @@ impl ModelInfo {
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
             laziness_detector: entry.laziness_detector.clone(),
+            provider: entry.provider,
         }
     }
     /// Derive the legacy effort gate/default from `reasoning_efforts` so the
@@ -4321,8 +4502,28 @@ impl ModelInfo {
     /// | true     | _                  | hidden     | hidden       |
     /// | false    | true               | visible    | visible      |
     /// | false    | false              | visible    | **hidden**   |
-    pub(crate) fn visible_for_auth(&self, is_session_auth: bool) -> bool {
-        !self.hidden && (is_session_auth || self.supported_in_api)
+    ///
+    /// Subscription-provider models are governed by their *own* credential
+    /// instead: they are visible exactly when that provider is signed in, and
+    /// the xAI session token is irrelevant to them. Keying them off
+    /// `is_session_auth` got it wrong in both directions — Claude models showed
+    /// for an xAI user who had never signed in to Anthropic, and stayed hidden
+    /// for an `XAI_API_KEY` user who had.
+    pub(crate) fn visible_for_auth(
+        &self,
+        is_session_auth: bool,
+        live: crate::auth::LiveProviders,
+    ) -> bool {
+        if self.hidden {
+            return false;
+        }
+        match self.provider {
+            Some(provider) if provider != crate::auth::SubscriptionProvider::Xai => {
+                // A per-model BYOK key is an independent way in.
+                live.has(provider) || self.supported_in_api
+            }
+            _ => is_session_auth || self.supported_in_api,
+        }
     }
 }
 /// Flat struct so credential and endpoint fields coexist after deep-merge.
@@ -4795,6 +4996,20 @@ pub(crate) fn resolve_credentials(
             info.base_url.clone(),
             xai_chat_state::AuthType::ApiKey,
         )
+    } else if let Some(provider) = info.provider.filter(|p| {
+        matches!(
+            p,
+            crate::auth::SubscriptionProvider::Anthropic
+                | crate::auth::SubscriptionProvider::OpenaiCodex
+        )
+    }) {
+        let cred = crate::auth::providers::registry::AuthRegistry::new(
+            &crate::util::grok_home::grok_home(),
+            &crate::auth::GrokComConfig::default(),
+        )
+        .credential_for(provider);
+        let key = cred.map(|c| c.key);
+        (key, info.base_url.clone(), xai_chat_state::AuthType::ApiKey)
     } else if let Some(provider) = model.auth_provider.as_ref() {
         debug_assert!(model.effective_auth_provider().is_some());
         (
@@ -4945,10 +5160,42 @@ pub(crate) fn resolve_model_auth_facts_and_provider(
         (facts, provider)
     })
 }
+/// The subscription provider that owns `model_id`, from the catalog.
+///
+/// Wire identity is a property of the **model being called**, never of the
+/// session's own credential. A user signed in to xAI who selects a Claude model
+/// is still talking to Anthropic, so deriving impersonation from the session's
+/// `auth_manager` scope gets it exactly backwards: it reports xAI (leaking
+/// `x-grok-*` headers to a third party) and skips the Codex `instructions`
+/// rewrite, which the ChatGPT backend rejects with
+/// `400 System messages are not allowed`.
+pub(crate) fn resolve_model_subscription_provider(
+    model_id: &str,
+) -> Option<crate::auth::SubscriptionProvider> {
+    if model_id.is_empty() {
+        return None;
+    }
+    with_resolved_model(model_id, |lookup| match lookup {
+        ModelLookup::Loaded(Some(e)) => e.info().provider,
+        _ => None,
+    })
+}
+
 fn byok_from_lookup(lookup: &ModelLookup) -> ModelByok {
     match lookup {
         ModelLookup::ConfigUnavailable => ModelByok::Unknown,
         ModelLookup::Loaded(Some(e)) if e.has_own_credentials() => ModelByok::Byok,
+        ModelLookup::Loaded(Some(e))
+            if matches!(
+                e.info().provider,
+                Some(
+                    crate::auth::SubscriptionProvider::Anthropic
+                        | crate::auth::SubscriptionProvider::OpenaiCodex
+                )
+            ) =>
+        {
+            ModelByok::SubscriptionOauth
+        }
         ModelLookup::Loaded(_) => ModelByok::NotByok,
     }
 }
@@ -5052,6 +5299,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
+                provider: None,
             },
             api_key: Some(bearer),
             env_key: None,
@@ -5156,6 +5404,62 @@ pub(crate) fn response_include_extensions(
         Vec::new()
     }
 }
+#[derive(Debug)]
+struct AnthropicHeaderInjector {
+    session_id: String,
+}
+
+impl xai_grok_sampler::HeaderInjector for AnthropicHeaderInjector {
+    fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&self.session_id) {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-claude-code-session-id"),
+                val,
+            );
+        }
+    }
+}
+
+#[derive(Debug)]
+struct OpenAiCodexHeaderInjector {
+    auth_manager: Arc<crate::auth::AuthManager>,
+    session_id: String,
+}
+
+impl xai_grok_sampler::HeaderInjector for OpenAiCodexHeaderInjector {
+    fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
+        let auth = self.auth_manager.current_wire_valid();
+        if let Some(account_id) = auth.as_ref().and_then(|a| a.account_id.as_deref())
+            && let Ok(val) = reqwest::header::HeaderValue::from_str(account_id)
+        {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("chatgpt-account-id"),
+                val,
+            );
+        }
+        if let Ok(val) =
+            reqwest::header::HeaderValue::from_str(crate::auth::openai_codex::wire::ORIGINATOR)
+        {
+            headers.insert(reqwest::header::HeaderName::from_static("originator"), val);
+        }
+        if let Ok(val) =
+            reqwest::header::HeaderValue::from_str(crate::auth::openai_codex::wire::OPENAI_BETA)
+        {
+            headers.insert(reqwest::header::HeaderName::from_static("openai-beta"), val);
+        }
+        let req_id = uuid::Uuid::now_v7().to_string();
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&self.session_id) {
+            headers.insert(reqwest::header::HeaderName::from_static("session-id"), val);
+        }
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&req_id) {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-client-request-id"),
+                val,
+            );
+        }
+    }
+}
+
 pub(crate) fn sampling_config_for_model(
     model: &ModelEntry,
     credentials: ResolvedCredentials,
@@ -5181,6 +5485,47 @@ pub(crate) fn sampling_config_for_model(
         &api_backend,
         &credentials.base_url,
     );
+    let wire_identity = info
+        .provider
+        .map(|p| p.wire_identity())
+        .unwrap_or(xai_grok_sampler::WireIdentity::Grok);
+    let system_prompt_as_instructions =
+        info.provider == Some(crate::auth::SubscriptionProvider::OpenaiCodex);
+
+    let (bearer_resolver, header_injector) = match info.provider {
+        Some(crate::auth::SubscriptionProvider::Anthropic) => {
+            let reg = crate::auth::providers::registry::AuthRegistry::new(
+                &crate::util::grok_home::grok_home(),
+                &crate::auth::GrokComConfig::default(),
+            );
+            let resolver = reg
+                .manager(crate::auth::SubscriptionProvider::Anthropic)
+                .map(|mgr| crate::auth::credential_provider::WireValidBearerResolver::shared(mgr));
+            let injector = Some(std::sync::Arc::new(AnthropicHeaderInjector {
+                session_id: uuid::Uuid::now_v7().to_string(),
+            }) as xai_grok_sampler::SharedHeaderInjector);
+            (resolver, injector)
+        }
+        Some(crate::auth::SubscriptionProvider::OpenaiCodex) => {
+            let reg = crate::auth::providers::registry::AuthRegistry::new(
+                &crate::util::grok_home::grok_home(),
+                &crate::auth::GrokComConfig::default(),
+            );
+            let mgr = reg.manager(crate::auth::SubscriptionProvider::OpenaiCodex);
+            let resolver = mgr.as_ref().map(|m| {
+                crate::auth::credential_provider::WireValidBearerResolver::shared(m.clone())
+            });
+            let injector = mgr.map(|m| {
+                std::sync::Arc::new(OpenAiCodexHeaderInjector {
+                    auth_manager: m,
+                    session_id: uuid::Uuid::now_v7().to_string(),
+                }) as xai_grok_sampler::SharedHeaderInjector
+            });
+            (resolver, injector)
+        }
+        _ => (None, None),
+    };
+
     SamplerConfig {
         api_key: credentials.api_key,
         model: model_name,
@@ -5190,6 +5535,8 @@ pub(crate) fn sampling_config_for_model(
         top_p,
         api_backend,
         auth_scheme: credentials.auth_scheme,
+        wire_identity,
+        system_prompt_as_instructions,
         extra_headers,
         extra_response_includes,
         query_params: info.query_params.clone(),
@@ -5206,12 +5553,12 @@ pub(crate) fn sampling_config_for_model(
         user_id,
         origin_client: None,
         attribution_callback: None,
-        bearer_resolver: None,
+        bearer_resolver,
         supports_backend_search: info.supports_backend_search,
         compactions_remaining: info.compactions_remaining,
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,
-        header_injector: None,
+        header_injector,
     }
 }
 /// Fold URL-derived headers into `extra_headers`.
@@ -5288,6 +5635,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            provider: None,
         },
         api_key: None,
         env_key: None,

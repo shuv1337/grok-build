@@ -606,7 +606,8 @@ fn default_model_honors_allowlist_when_no_default_set() {
             "#,
     );
     let catalog = resolve_model_catalog(&cfg, None);
-    let (_key, entry, _src) = resolve_default_model(&cfg, &catalog, true);
+    let (_key, entry, _src) =
+        resolve_default_model(&cfg, &catalog, true, crate::auth::LiveProviders::default());
     assert!(
         entry.info.user_selectable,
         "picked non-selectable {}",
@@ -1716,7 +1717,8 @@ fn unavailable_campaign_default_falls_back_to_config_default() {
     cfg.models.default = Some("missing-model".to_string());
     cfg.models.default_is_campaign_driven = true;
     cfg.models.pre_campaign_default = Some("real-model".to_string());
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
+    let (key, _, _) =
+        resolve_default_model(&cfg, &catalog, true, crate::auth::LiveProviders::default());
     assert_eq!(
         key, "real-model",
         "must fall back to the pre-campaign default"
@@ -1726,13 +1728,15 @@ fn unavailable_campaign_default_falls_back_to_config_default() {
     cfg2.models.default = Some("missing-model".to_string());
     cfg2.models.default_is_campaign_driven = true;
     cfg2.models.pre_campaign_default = Some("also-missing".to_string());
-    let (key2, _, _) = resolve_default_model(&cfg2, &catalog, true);
+    let (key2, _, _) =
+        resolve_default_model(&cfg2, &catalog, true, crate::auth::LiveProviders::default());
     assert_eq!(&key2, catalog.keys().next().unwrap());
 
     let mut cfg3 = config::Config::default();
     cfg3.models.default = Some("missing-model".to_string());
     cfg3.models.pre_campaign_default = Some("real-model".to_string());
-    let (key3, _, _) = resolve_default_model(&cfg3, &catalog, true);
+    let (key3, _, _) =
+        resolve_default_model(&cfg3, &catalog, true, crate::auth::LiveProviders::default());
     assert_eq!(
         &key3,
         catalog.keys().next().unwrap(),
@@ -1746,7 +1750,8 @@ fn unavailable_campaign_default_falls_back_to_config_default() {
     cfg4.models.default = Some("campaign-model".to_string());
     cfg4.models.default_is_campaign_driven = true;
     cfg4.models.pre_campaign_default = Some("real-model".to_string());
-    let (key4, _, _) = resolve_default_model(&cfg4, &catalog, true);
+    let (key4, _, _) =
+        resolve_default_model(&cfg4, &catalog, true, crate::auth::LiveProviders::default());
     assert_eq!(
         &key4,
         catalog.keys().next().unwrap(),
@@ -1939,14 +1944,16 @@ fn default_model_skips_oauth_only_for_api_key_users() {
     };
     catalog.insert("public-model".to_string(), public);
 
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, false);
+    let (key, _, _) =
+        resolve_default_model(&cfg, &catalog, false, crate::auth::LiveProviders::default());
     assert_ne!(
         key, "oauth-only",
         "API-key default must not be an OAuth-only model"
     );
     assert_eq!(key, "public-model");
 
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
+    let (key, _, _) =
+        resolve_default_model(&cfg, &catalog, true, crate::auth::LiveProviders::default());
     assert!(
         key == "oauth-only" || key == "public-model",
         "OAuth user should be able to use either model as default"
@@ -1957,17 +1964,17 @@ fn default_model_skips_oauth_only_for_api_key_users() {
 fn visible_for_auth_logic() {
     let mut info = config::ModelInfo::fallback("test");
 
-    assert!(info.visible_for_auth(true));
-    assert!(info.visible_for_auth(false));
+    assert!(info.visible_for_auth(true, crate::auth::LiveProviders::default()));
+    assert!(info.visible_for_auth(false, crate::auth::LiveProviders::default()));
 
     info.hidden = true;
-    assert!(!info.visible_for_auth(true));
-    assert!(!info.visible_for_auth(false));
+    assert!(!info.visible_for_auth(true, crate::auth::LiveProviders::default()));
+    assert!(!info.visible_for_auth(false, crate::auth::LiveProviders::default()));
 
     info.hidden = false;
     info.supported_in_api = false;
-    assert!(info.visible_for_auth(true));
-    assert!(!info.visible_for_auth(false));
+    assert!(info.visible_for_auth(true, crate::auth::LiveProviders::default()));
+    assert!(!info.visible_for_auth(false, crate::auth::LiveProviders::default()));
 }
 
 // ── duplicate model slug re-keying (A/B experiment "auto" alias) ──
@@ -2014,6 +2021,7 @@ fn make_entry_config_with_id(
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: config::LazinessDetectorPerModelConfig::default(),
+        provider: None,
     }
 }
 
@@ -2078,7 +2086,8 @@ fn resolve_default_model_prefers_id_over_model_slug() {
     let mut cfg = config::Config::default();
     cfg.models.default = Some("grok-build".to_string());
 
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
+    let (key, _, _) =
+        resolve_default_model(&cfg, &catalog, true, crate::auth::LiveProviders::default());
     assert_eq!(key, "grok-build", "must match id, not first slug hit");
 }
 

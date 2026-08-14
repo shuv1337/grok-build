@@ -16,6 +16,28 @@ grok models
 
 ---
 
+## Subscription Providers (Claude, ChatGPT)
+
+Anthropic and OpenAI Codex models ship in the built-in catalog and are selected
+like any other model — no `[model.*]` block required. They become selectable
+once you sign in with your consumer subscription:
+
+```bash
+grok login --provider anthropic       # Claude Pro / Max
+grok login --provider openai-codex    # ChatGPT Plus / Pro
+```
+
+These entries carry their own endpoint, wire protocol (Anthropic Messages /
+OpenAI Responses), and credential, resolved ahead of the xAI session token and
+`XAI_API_KEY` — neither of which is ever sent to a third-party endpoint. A
+per-model `api_key` or `env_key` still outranks the subscription credential, so
+BYOK against the same model family keeps working unchanged.
+
+See [Authentication](02-authentication.md#alternative-providers-claude-promax-chatgpt-pluspro)
+for the login flows, refresh behavior, and billing caveat.
+
+---
+
 ## Selecting a Model
 
 ### CLI Flag

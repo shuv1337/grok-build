@@ -10,6 +10,8 @@ use std::sync::LazyLock;
 /// `xai_grok_shell::models` facade and consumed by `agent::config`, so it must
 /// be `pub` (was `pub(crate)` when this lived inside the shell crate).
 pub const DEFAULT_MODELS_JSON: &str = include_str!("../default_models.json");
+pub const ANTHROPIC_MODELS_JSON: &str = include_str!("../anthropic_models.json");
+pub const OPENAI_CODEX_MODELS_JSON: &str = include_str!("../openai_codex_models.json");
 
 #[derive(serde::Deserialize)]
 struct DefaultModels {

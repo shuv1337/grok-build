@@ -253,6 +253,7 @@ pub fn classify_error(
     // during an edge outage every client gets the same `Retry-After` at
     // the same instant.
     if err.is_retryable() {
+        tracing::debug!(error = %err, "retryable sampling error");
         let next_attempt = retry_count + 1;
         if next_attempt >= max_retries {
             return RetryDecision::Fatal(clone_error(err));

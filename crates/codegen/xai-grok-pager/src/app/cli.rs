@@ -20,9 +20,16 @@ pub enum Command {
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
-    Logout,
-    /// Sign in to Grok
+    Logout {
+        /// Select the provider to sign out from ("xai", "anthropic", "openai-codex")
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Sign in to Grok or an alternative provider (Anthropic / OpenAI Codex)
     Login {
+        /// Select the provider to authenticate ("xai", "anthropic", "openai-codex")
+        #[arg(long)]
+        provider: Option<String>,
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
@@ -1398,8 +1405,64 @@ mod tests {
     #[test]
     fn subcommand_takes_precedence_over_positional_prompt() {
         let args = PagerArgs::try_parse_from(["grok", "logout"]).expect("subcommand parses");
-        assert!(matches!(args.command, Some(Command::Logout)));
+        assert!(matches!(
+            args.command,
+            Some(Command::Logout { provider: None })
+        ));
         assert!(args.prompt.is_none());
+    }
+    /// `--provider` selects an alternative subscription provider on both
+    /// `login` and `logout`; omitting it stays `None` so the xAI default and
+    /// the interactive picker are preserved.
+    #[test]
+    fn login_and_logout_accept_provider_flag() {
+        let args = PagerArgs::try_parse_from(["grok", "login", "--provider", "anthropic"])
+            .expect("login --provider parses");
+        let Some(Command::Login { provider, .. }) = args.command else {
+            panic!("expected login subcommand");
+        };
+        assert_eq!(provider.as_deref(), Some("anthropic"));
+
+        let args = PagerArgs::try_parse_from(["grok", "logout", "--provider", "openai-codex"])
+            .expect("logout --provider parses");
+        assert!(matches!(
+            args.command,
+            Some(Command::Logout { provider: Some(ref p) }) if p == "openai-codex"
+        ));
+
+        let args = PagerArgs::try_parse_from(["grok", "login"]).expect("bare login parses");
+        assert!(matches!(
+            args.command,
+            Some(Command::Login { provider: None, .. })
+        ));
+    }
+    /// `--device-auth` must remain usable alongside `--provider` (the Codex
+    /// headless flow), while `--oauth`/`--device-auth` stay mutually exclusive.
+    #[test]
+    fn login_provider_combines_with_device_auth_but_oauth_conflicts() {
+        let args = PagerArgs::try_parse_from([
+            "grok",
+            "login",
+            "--provider",
+            "openai-codex",
+            "--device-auth",
+        ])
+        .expect("provider + device-auth parses");
+        let Some(Command::Login {
+            provider,
+            device_auth,
+            ..
+        }) = args.command
+        else {
+            panic!("expected login subcommand");
+        };
+        assert_eq!(provider.as_deref(), Some("openai-codex"));
+        assert!(device_auth);
+
+        assert!(
+            PagerArgs::try_parse_from(["grok", "login", "--oauth", "--device-auth"]).is_err(),
+            "--oauth and --device-auth must stay mutually exclusive"
+        );
     }
     #[test]
     fn positional_prompt_conflicts_with_headless_single() {

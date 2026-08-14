@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::io::IsTerminal;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -195,6 +196,20 @@ impl AuthUrlMode {
 pub struct AuthUrlInfo {
     pub url: String,
     pub mode: AuthUrlMode,
+    /// Which provider this sign-in targets. `None` for legacy/xAI flows that
+    /// predate the provider dimension; clients treat it as `xai`.
+    pub provider: Option<SubscriptionProvider>,
+}
+
+impl AuthUrlInfo {
+    /// xAI-provider URL info — the shape every pre-existing flow emits.
+    pub fn xai(url: String, mode: AuthUrlMode) -> Self {
+        Self {
+            url,
+            mode,
+            provider: Some(SubscriptionProvider::Xai),
+        }
+    }
 }
 
 /// Channels for interactive login between the auth flow and the TUI/extension.
@@ -361,6 +376,7 @@ pub(crate) async fn run_auth_flow_with_stderr_bridge(
                 let _ = tx.send(AuthUrlInfo {
                     url,
                     mode: AuthUrlMode::Command,
+                    provider: Some(SubscriptionProvider::Xai),
                 });
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -961,36 +977,132 @@ pub async fn ensure_authenticated_or_noninteractive(
 /// otherwise `GROK_LOGIN_DEVICE_FLOW` env / `[auth] login_device_flow` config /
 /// loopback default. Both transports run through `run_auth_flow_inner` so the
 /// external auth provider and devbox auto-migration are tried first.
+use crate::auth::SubscriptionProvider;
+
+pub async fn run_cli_login_with_provider(
+    config: &crate::agent::config::Config,
+    provider: Option<SubscriptionProvider>,
+    oauth: bool,
+    device_auth: bool,
+    devbox: bool,
+) -> anyhow::Result<()> {
+    if devbox {
+        let auth = super::devbox_login::run_devbox_login(config).await?;
+        return apply_post_login_config(auth).await;
+    }
+
+    let grok_home = grok_home::grok_home();
+    let auth_manager = Arc::new(AuthManager::new(&grok_home, config.grok_com_config.clone()));
+    crate::agent::init::update_telemetry_config(config, &auth_manager);
+
+    let selected_provider = match provider {
+        Some(p) => p,
+        None => {
+            if std::io::stdin().is_terminal() && !oauth && !device_auth {
+                prompt_provider_picker()?
+            } else {
+                SubscriptionProvider::Xai
+            }
+        }
+    };
+
+    let result = match selected_provider {
+        SubscriptionProvider::Xai => {
+            run_cli_login_steps(config, &auth_manager, oauth, device_auth).await
+        }
+        SubscriptionProvider::Anthropic => {
+            let ant_manager = Arc::new(AuthManager::for_provider(
+                &grok_home,
+                SubscriptionProvider::Anthropic,
+                &config.grok_com_config,
+            ));
+            let (_auth, _) =
+                crate::auth::anthropic::run_anthropic_login(&ant_manager, None).await?;
+            eprintln!("Successfully logged in to Claude (Anthropic).");
+            Ok(())
+        }
+        SubscriptionProvider::OpenaiCodex => {
+            let codex_manager = Arc::new(AuthManager::for_provider(
+                &grok_home,
+                SubscriptionProvider::OpenaiCodex,
+                &config.grok_com_config,
+            ));
+            if device_auth {
+                let (_auth, _) =
+                    crate::auth::openai_codex::run_openai_codex_device_login(&codex_manager, None)
+                        .await?;
+                eprintln!("Successfully logged in to ChatGPT (OpenAI Codex).");
+            } else {
+                let (_auth, _) =
+                    crate::auth::openai_codex::run_openai_codex_login(&codex_manager, None).await?;
+                eprintln!("Successfully logged in to ChatGPT (OpenAI Codex).");
+            }
+            Ok(())
+        }
+    };
+
+    xai_grok_telemetry::session_ctx::drain_pending(xai_grok_telemetry::session_ctx::CLI_DRAIN)
+        .await;
+    result
+}
+
+fn prompt_provider_picker() -> anyhow::Result<SubscriptionProvider> {
+    use std::io::{BufRead, Write};
+    println!("Select provider to log in:");
+    println!("  1) Grok (xAI) [default]");
+    println!("  2) Claude Pro/Max (Anthropic)");
+    println!("  3) ChatGPT Plus/Pro (OpenAI Codex)");
+    print!("Choice [1-3, default: 1]: ");
+    std::io::stdout().flush().ok();
+
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    match line.trim() {
+        "2" | "anthropic" | "claude" => Ok(SubscriptionProvider::Anthropic),
+        "3" | "openai" | "codex" | "chatgpt" | "openai-codex" => {
+            Ok(SubscriptionProvider::OpenaiCodex)
+        }
+        _ => Ok(SubscriptionProvider::Xai),
+    }
+}
+
 pub async fn run_cli_login(
     config: &crate::agent::config::Config,
     oauth: bool,
     device_auth: bool,
     devbox: bool,
 ) -> anyhow::Result<()> {
-    // Devbox never reaches the login funnel, so it reports nothing and needs
-    // no telemetry client — and `AuthManager::new` is not free (it logs, and
-    // may rewrite auth.json to drop a stale scope).
-    if devbox {
-        let auth = super::devbox_login::run_devbox_login(config).await?;
-        return apply_post_login_config(auth).await;
-    }
+    run_cli_login_with_provider(config, None, oauth, device_auth, devbox).await
+}
 
-    // Agent bootstrap is what normally initializes the product telemetry
-    // client, and `grok login` never boots an agent, so without this every
-    // event this process emits is dropped before reaching a sink. One manager
-    // serves both the identity it reads and the login flow below.
-    let auth_manager = Arc::new(AuthManager::new(
-        &grok_home::grok_home(),
-        config.grok_com_config.clone(),
+/// Run a third-party subscription OAuth against its own `AuthManager`.
+///
+/// Shared by the ACP `/login <provider>` path and any other caller that
+/// already holds interactive channels. `provider` must not be
+/// [`SubscriptionProvider::Xai`] — that flow has its own richer entry point
+/// (devbox migration, external providers, transport override).
+pub async fn run_provider_login(
+    provider: SubscriptionProvider,
+    channels: AuthChannels,
+) -> anyhow::Result<(GrokAuth, bool)> {
+    let grok_home = grok_home::grok_home();
+    let grok_com_config = GrokComConfig::default();
+    let manager = Arc::new(AuthManager::for_provider(
+        &grok_home,
+        provider,
+        &grok_com_config,
     ));
-    crate::agent::init::update_telemetry_config(config, &auth_manager);
-
-    let result = run_cli_login_steps(config, &auth_manager, oauth, device_auth).await;
-
-    // Posts run on a spawned task and this process exits as soon as we return.
-    xai_grok_telemetry::session_ctx::drain_pending(xai_grok_telemetry::session_ctx::CLI_DRAIN)
-        .await;
-    result
+    match provider {
+        SubscriptionProvider::Anthropic => {
+            crate::auth::anthropic::run_anthropic_login(&manager, Some(channels)).await
+        }
+        SubscriptionProvider::OpenaiCodex => {
+            crate::auth::openai_codex::run_openai_codex_login(&manager, Some(channels)).await
+        }
+        SubscriptionProvider::Xai => {
+            anyhow::bail!("run_provider_login does not handle the xAI flow")
+        }
+    }
 }
 
 async fn run_cli_login_steps(
@@ -1147,10 +1259,14 @@ pub fn perform_logout(
 
 /// `grok logout` CLI handler. Calls [`perform_logout`] and formats
 /// the result to stderr.
-pub fn run_cli_logout(config: &crate::agent::config::Config) -> anyhow::Result<()> {
+pub fn run_cli_logout_with_provider(
+    config: &crate::agent::config::Config,
+    provider: Option<SubscriptionProvider>,
+) -> anyhow::Result<()> {
     let grok_home = grok_home::grok_home();
     let auth_manager = AuthManager::new(&grok_home, config.grok_com_config.clone());
-    let result = perform_logout(&auth_manager, None)
+    let scope_override = provider.and_then(|p| p.static_auth_scope());
+    let result = perform_logout(&auth_manager, scope_override)
         .map_err(|e| anyhow::anyhow!("Failed to clear auth: {e}"))?;
     if !result.was_logged_in {
         eprintln!("No cached session to log out of.");
@@ -1168,6 +1284,10 @@ pub fn run_cli_logout(config: &crate::agent::config::Config) -> anyhow::Result<(
         eprintln!("XAI_API_KEY is still set and will be used for authentication.");
     }
     Ok(())
+}
+
+pub fn run_cli_logout(config: &crate::agent::config::Config) -> anyhow::Result<()> {
+    run_cli_logout_with_provider(config, None)
 }
 
 #[cfg(test)]
@@ -1787,6 +1907,9 @@ mod tests {
             expires_at: None,
             oidc_issuer: None,
             oidc_client_id: None,
+            provider: SubscriptionProvider::Xai,
+            account_id: None,
+            subscription_tier: None,
         }
     }
 

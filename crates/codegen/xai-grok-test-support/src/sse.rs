@@ -355,6 +355,84 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
 ///
 /// Returns [`SseEvent`]s for direct use with [`crate::ScriptedResponse::sse`]
 /// / `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
+/// A Responses turn shaped like the **ChatGPT Codex** backend: the assistant
+/// message is delivered by `response.output_item.done`, and the terminal
+/// `response.completed` carries `"output": []`.
+///
+/// That is not a malformed stream — with `store: false` the backend never
+/// echoes the turn back, so the streamed item is the only copy. A client that
+/// reads content solely from the terminal event sees nothing, calls the turn
+/// empty, and retries a question that was answered every time.
+pub fn responses_api_empty_terminal_output_events(text: &str, model: &str) -> Vec<SseEvent> {
+    let mut events = Vec::new();
+    let mut seq = 0;
+
+    events.push(SseEvent::data(
+        json!({
+            "type": "response.created",
+            "sequence_number": seq,
+            "response": {
+                "id": "resp_test", "object": "response", "created_at": 1234567890,
+                "model": model, "status": "in_progress", "output": []
+            }
+        })
+        .to_string(),
+    ));
+    seq += 1;
+
+    for delta in responses_api_deltas(text) {
+        events.push(SseEvent::data(
+            json!({
+                "type": "response.output_text.delta",
+                "sequence_number": seq,
+                "item_id": "msg_test",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": delta
+            })
+            .to_string(),
+        ));
+        seq += 1;
+    }
+
+    // The only copy of the assistant turn.
+    events.push(SseEvent::data(
+        json!({
+            "type": "response.output_item.done",
+            "sequence_number": seq,
+            "output_index": 0,
+            "item": {
+                "type": "message", "id": "msg_test", "role": "assistant",
+                "status": "completed",
+                "content": [{ "type": "output_text", "text": text, "annotations": [] }]
+            }
+        })
+        .to_string(),
+    ));
+    seq += 1;
+
+    events.push(SseEvent::data(
+        json!({
+            "type": "response.completed",
+            "sequence_number": seq,
+            "response": {
+                "id": "resp_test", "object": "response", "created_at": 1234567890,
+                "model": model, "status": "completed",
+                // The behavior under test.
+                "output": [],
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens_details": { "reasoning_tokens": 0 }
+                }
+            }
+        })
+        .to_string(),
+    ));
+    events.push(SseEvent::data("[DONE]"));
+    events
+}
+
 pub fn responses_api_reasoning_and_text_events(
     reasoning: &str,
     text: &str,

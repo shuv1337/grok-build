@@ -66,9 +66,10 @@ pub(crate) fn task_model_error_for_catalog(
     requested: &str,
     available: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
+    live: crate::auth::LiveProviders,
 ) -> Option<String> {
     let is_available = |entry: &ModelEntry| {
-        entry.info.user_selectable && entry.info.visible_for_auth(is_session_auth)
+        entry.info.user_selectable && entry.info.visible_for_auth(is_session_auth, live)
     };
     if config::find_model_by_id(available, requested).is_some_and(&is_available) {
         return None;
@@ -344,8 +345,10 @@ impl ModelsManager {
             validate_selectable(cfg, &catalog)?;
         }
 
+        let live_providers =
+            crate::auth::LiveProviders::detect(&crate::util::grok_home::grok_home());
         let (current_model_key, current_model, model_source) =
-            resolve_default_model(cfg, &catalog, is_session_auth);
+            resolve_default_model(cfg, &catalog, is_session_auth, live_providers);
 
         tracing::info!(
             model_id = %current_model.model,
@@ -466,6 +469,13 @@ impl ModelsManager {
             .is_some_and(|a| a.is_session_auth())
     }
 
+    /// Subscription providers signed in right now. Re-read per call (one
+    /// `auth.json` read) so `/login anthropic` makes those models selectable
+    /// without restarting the session.
+    fn live_providers(&self) -> crate::auth::LiveProviders {
+        crate::auth::LiveProviders::detect(&crate::util::grok_home::grok_home())
+    }
+
     /// ACP-visible (non-hidden) projection of the catalog.
     pub fn available(&self) -> IndexMap<acp::ModelId, acp::ModelInfo> {
         let snapshot = {
@@ -479,14 +489,14 @@ impl ModelsManager {
             .filter(|(_, e)| e.info.user_selectable)
             .collect();
 
-        available_models(&selectable, self.is_session_auth())
+        available_models(&selectable, self.is_session_auth(), self.live_providers())
     }
 
     pub(crate) fn task_model_error(&self, requested: &str) -> Option<String> {
         let is_session_auth = self.is_session_auth();
         let cat = self.inner.catalog.read();
         let models = &cat.models;
-        task_model_error_for_catalog(requested, models, is_session_auth)
+        task_model_error_for_catalog(requested, models, is_session_auth, self.live_providers())
     }
 
     pub fn current_model_id(&self) -> acp::ModelId {
@@ -1309,7 +1319,10 @@ impl ModelsManager {
                 None => true,
                 Some(entry) => {
                     !entry.info.user_selectable
-                        || (!user_selected && !entry.info.visible_for_auth(self.is_session_auth()))
+                        || (!user_selected
+                            && !entry
+                                .info
+                                .visible_for_auth(self.is_session_auth(), self.live_providers()))
                 }
             }
         };
@@ -1319,7 +1332,12 @@ impl ModelsManager {
         let (key, _, source) = {
             let cat = self.inner.catalog.read();
             let models = &cat.models;
-            resolve_default_model(config, models, self.is_session_auth())
+            resolve_default_model(
+                config,
+                models,
+                self.is_session_auth(),
+                self.live_providers(),
+            )
         };
         let new_id = acp::ModelId::new(Arc::from(key));
         tracing::info!(
@@ -1334,7 +1352,12 @@ impl ModelsManager {
         let (key, _, source) = {
             let cat = self.inner.catalog.read();
             let models = &cat.models;
-            resolve_default_model(config, models, self.is_session_auth())
+            resolve_default_model(
+                config,
+                models,
+                self.is_session_auth(),
+                self.live_providers(),
+            )
         };
         let new_id = acp::ModelId::new(Arc::from(key));
         let current = self.inner.current_model_id.read().clone();

@@ -624,6 +624,19 @@ pub struct ConversationRequest {
     pub json_schema: Option<serde_json::Value>,
     /// Sticky routing key for prompt-cache reuse; overrides `x_grok_conv_id` for routing.
     pub prompt_cache_key: Option<String>,
+    /// When set, controls `parallel_tool_calls` in Responses API.
+    pub parallel_tool_calls: Option<bool>,
+    /// Optional Messages API wire-shaping options for third-party providers.
+    pub messages_shaping: Option<MessagesShaping>,
+}
+
+/// Messages API wire-shaping options for third-party subscription backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct MessagesShaping {
+    /// Injects the Claude Code identity block as system[0].
+    pub inject_claude_identity: bool,
+    /// Maps tool names in definitions and history to Claude Code casing.
+    pub claude_tool_casing: bool,
 }
 
 impl ConversationRequest {

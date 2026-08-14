@@ -1133,6 +1133,9 @@ pub struct AppView {
     pub gate: Option<xai_grok_shell::auth::GateInfo>,
     /// User-friendly subscription tier name (e.g. "SuperGrok", "Free").
     pub subscription_tier: Option<String>,
+    /// Third-party subscription providers and whether each is signed in.
+    /// Rendered in the `/usage` Subscriptions section.
+    pub subscription_providers: Vec<xai_grok_shell::auth::SubscriptionProviderStatus>,
     /// When the pager started auto-checking subscriptions (for 10-min timeout).
     pub paywall_check_started: Option<std::time::Instant>,
     /// Debounce stamp for watch/focus subscription checks (see
@@ -1358,6 +1361,7 @@ impl AppView {
             );
         }
         self.subscription_tier = meta.subscription_tier.clone();
+        self.subscription_providers = meta.subscription_providers.clone();
         let was_api_key = self.is_api_key_auth;
         self.is_api_key_auth = meta.auth_mode.as_deref().is_some_and(is_api_key_label)
             || meta
@@ -1600,6 +1604,7 @@ impl AppView {
             announcement_cta_impressions_logged: Default::default(),
             gate: None,
             subscription_tier: None,
+            subscription_providers: Vec::new(),
             paywall_check_started: None,
             last_subscription_check_at: None,
             subscription_watch_interval_secs: None,

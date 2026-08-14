@@ -15,11 +15,11 @@ fn api_key_id_for(auth: Option<&crate::auth::GrokAuth>) -> Option<String> {
 /// [`AuthManager`]: wire-valid only — never stamps a hard-expired access
 /// token (the client auth contract). Shared by the session sampler and
 /// subagent configs so the contract can't drift between them.
-pub(crate) struct WireValidBearerResolver(pub(crate) Arc<AuthManager>);
+pub struct WireValidBearerResolver(pub(crate) Arc<AuthManager>);
 impl WireValidBearerResolver {
     /// The one constructor both the session sampler and subagent configs use,
     /// so the wire-valid contract cannot drift between the call sites.
-    pub(crate) fn shared(auth_manager: Arc<AuthManager>) -> xai_grok_sampler::SharedBearerResolver {
+    pub fn shared(auth_manager: Arc<AuthManager>) -> xai_grok_sampler::SharedBearerResolver {
         Arc::new(Self(auth_manager))
     }
 }

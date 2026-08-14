@@ -23,6 +23,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "x.ai/auth/logout" => handle_logout(agent, args).await,
         "x.ai/auth/info" => handle_info(agent),
         "x.ai/auth/check_subscription" => handle_check_subscription(agent).await,
+        "x.ai/auth/subscription_usage" => handle_subscription_usage().await,
         _ => Err(acp::Error::method_not_found()),
     }
 }
@@ -125,18 +126,21 @@ async fn handle_get_url(agent: &MvpAgent) -> ExtResult {
     let rx = agent.interactive_auth.take_url_rx();
     // `None` when no URL was sent (cached creds, early error, second poll):
     // report mode as `null` rather than mislabeling it `loopback`.
-    let (auth_url, mode) = match rx {
+    let (auth_url, mode, provider) = match rx {
         Some(rx) => match rx.await {
-            Ok(info) => (Some(info.url), Some(info.mode)),
-            Err(_) => (None, None),
+            Ok(info) => (Some(info.url), Some(info.mode), info.provider),
+            Err(_) => (None, None, None),
         },
-        None => (None, None),
+        None => (None, None, None),
     };
     to_raw_response(&serde_json::json!({
         "auth_url": auth_url,
         // `external_provider` kept for older clients; `mode` is authoritative.
         "external_provider": mode.is_some_and(|m| m.is_external_provider()),
         "mode": mode.map(|m| m.as_wire_str()),
+        // `null` for legacy flows that predate the provider dimension;
+        // clients treat absence as `xai`.
+        "provider": provider.map(|p| p.id()),
     }))
 }
 
@@ -144,6 +148,10 @@ async fn handle_logout(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     #[derive(Deserialize)]
     struct LogoutParams {
         scope: Option<String>,
+        /// Optional provider id (`anthropic`, `openai-codex`). Resolves to that
+        /// provider's auth.json scope; an explicit `scope` still wins.
+        #[serde(default)]
+        provider: Option<String>,
     }
 
     let params: LogoutParams = serde_json::from_str(args.params.get())
@@ -152,7 +160,14 @@ async fn handle_logout(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     // Stop any in-flight login so it cannot write credentials back after logout.
     agent.interactive_auth.cancel();
 
-    let result = crate::auth::perform_logout(&agent.auth_manager, params.scope.as_deref())
+    let provider_scope = params
+        .provider
+        .as_deref()
+        .and_then(crate::auth::SubscriptionProvider::from_id)
+        .and_then(|p| p.static_auth_scope());
+    let scope = params.scope.as_deref().or(provider_scope);
+
+    let result = crate::auth::perform_logout(&agent.auth_manager, scope)
         .map_err(|e| acp::Error::internal_error().data(format!("failed to logout: {e}")))?;
     // `auth.lifecycle` (not `auth`) avoids colliding with the pre-existing
     // per-request `AuthManager::auth()` `#[instrument]` span.
@@ -183,6 +198,37 @@ async fn handle_check_subscription(agent: &MvpAgent) -> ExtResult {
 
 /// Returns current auth method ID, user profile fields, and team/principal
 /// metadata.
+/// `x.ai/auth/subscription_usage` — live quota for each alternative provider.
+///
+/// Network-bound and deliberately un-cached: it is fetched when the `/usage`
+/// panel opens, which is exactly when the number needs to be current. Provider
+/// failures are reported per-row, so one provider being down still shows the
+/// other's bars.
+async fn handle_subscription_usage() -> ExtResult {
+    use crate::auth::providers::usage::SubscriptionUsageResponse;
+
+    let registry = crate::auth::AuthRegistry::new(
+        &crate::util::grok_home::grok_home(),
+        &crate::auth::GrokComConfig::default(),
+    );
+    let providers = crate::auth::providers::usage::fetch_all(&registry).await;
+    to_raw_response(&SubscriptionUsageResponse { providers })
+}
+
+/// One row of the `/usage` Subscriptions section.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionProviderStatus {
+    /// Canonical id (`anthropic`, `openai-codex`) — also the
+    /// `grok login --provider` argument, so clients can print the fix.
+    id: String,
+    display_name: String,
+    connected: bool,
+    /// Plan name when the provider reports one; absent for providers that
+    /// expose no plan in the credential.
+    tier: Option<String>,
+}
+
 fn handle_info(agent: &MvpAgent) -> ExtResult {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -205,6 +251,10 @@ fn handle_info(agent: &MvpAgent) -> ExtResult {
         user_blocked_reason: Option<String>,
         team_blocked_reasons: Vec<String>,
         coding_data_retention_opt_out: bool,
+        /// Third-party subscription providers enabled in this build, with
+        /// whether each is currently signed in. Empty when the alt-provider
+        /// feature is off, so clients render nothing.
+        subscription_providers: Vec<SubscriptionProviderStatus>,
     }
 
     let method_id = agent
@@ -251,5 +301,37 @@ fn handle_info(agent: &MvpAgent) -> ExtResult {
             .as_ref()
             .map(|a| a.coding_data_retention_opt_out)
             .unwrap_or_else(crate::auth::default_coding_data_retention_opt_out),
+        subscription_providers: subscription_provider_statuses(),
     })
+}
+
+/// Connection status for each enabled third-party provider.
+///
+/// Reads `auth.json` once. Note this reports *stored* credentials, not
+/// remaining quota: neither Anthropic nor OpenAI exposes a documented
+/// subscription-usage endpoint, so there is no honest number to show.
+fn subscription_provider_statuses() -> Vec<SubscriptionProviderStatus> {
+    use crate::auth::SubscriptionProvider;
+
+    let grok_home = crate::util::grok_home::grok_home();
+    let live = crate::auth::LiveProviders::detect(&grok_home);
+    let path = std::env::var("GROK_AUTH_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| grok_home.join("auth.json"));
+    let store = crate::auth::read_auth_json(&path).unwrap_or_default();
+
+    SubscriptionProvider::enabled()
+        .into_iter()
+        .filter(|p| *p != SubscriptionProvider::Xai)
+        .map(|p| SubscriptionProviderStatus {
+            id: p.id().to_string(),
+            display_name: p.display_name().to_string(),
+            connected: live.has(p),
+            tier: p
+                .static_auth_scope()
+                .and_then(|scope| store.get(scope))
+                .and_then(|a| a.subscription_tier.clone())
+                .filter(|t| !t.trim().is_empty()),
+        })
+        .collect()
 }

@@ -94,6 +94,8 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
     items
 }
 
+pub const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
+
 impl From<&ConversationRequest> for rs::CreateResponse {
     fn from(req: &ConversationRequest) -> Self {
         let input = build_responses_input(req);
@@ -125,6 +127,17 @@ impl From<&ConversationRequest> for rs::CreateResponse {
                 verbosity: None,
             });
 
+        let prompt_cache_key = req
+            .prompt_cache_key
+            .clone()
+            .or_else(|| req.x_grok_conv_id.clone())
+            .map(|mut k| {
+                if k.len() > OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH {
+                    k.truncate(OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH);
+                }
+                k
+            });
+
         rs::CreateResponse {
             background: None,
             conversation: None,
@@ -135,13 +148,10 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             max_tool_calls: None,
             metadata: None,
             model: req.model.clone(),
-            parallel_tool_calls: None,
+            parallel_tool_calls: req.parallel_tool_calls,
             previous_response_id: None,
             prompt: None,
-            prompt_cache_key: req
-                .prompt_cache_key
-                .clone()
-                .or_else(|| req.x_grok_conv_id.clone()),
+            prompt_cache_key,
             prompt_cache_retention: None,
             reasoning: Some(rs::Reasoning {
                 effort: req.reasoning_effort.map(|e| e.to_responses_api()),

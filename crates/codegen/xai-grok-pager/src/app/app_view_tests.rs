@@ -192,6 +192,7 @@ pub(crate) fn test_app() -> AppView {
         announcement_cta_impressions_logged: Default::default(),
         gate: None,
         subscription_tier: None,
+        subscription_providers: Vec::new(),
         paywall_check_started: None,
         last_subscription_check_at: None,
         subscription_watch_interval_secs: None,

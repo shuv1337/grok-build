@@ -667,6 +667,11 @@ pub enum Action {
     SwitchAccount,
     /// User pressed login on the welcome screen.
     Login,
+    /// `/login <provider>`: sign in to an alternative subscription provider
+    /// (`anthropic`, `openai-codex`). Carries the canonical provider id, which
+    /// rides to the shell in the `AuthenticateRequest` meta. `Login` remains
+    /// the xAI flow so existing entry points are untouched.
+    LoginWithProvider(String),
     /// Cancel an in-progress login that was started from inside a session
     /// (`/login` or a 401 re-auth prompt) and return to the previous view.
     /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit
@@ -1764,6 +1769,10 @@ pub enum Effect {
         method_id: acp::AuthMethodId,
         use_oauth: bool,
         force_interactive: bool,
+        /// Subscription provider id (`anthropic`, `openai-codex`) for
+        /// `/login <provider>`. `None` is the xAI flow, which is what every
+        /// pre-existing call site sends.
+        provider: Option<String>,
     },
     /// Poll for auth URL from the agent (ext request).
     PollAuthUrl { request_seq: u64 },
@@ -2130,6 +2139,13 @@ pub enum Effect {
     FetchSessionUsage {
         agent_id: AgentId,
         session_id: acp::SessionId,
+        /// Usage-modal fetch generation; echoed back on the task result.
+        nonce: u64,
+    },
+    /// Fetch third-party subscription quota via `x.ai/auth/subscription_usage`.
+    /// Session-independent: these limits belong to the account, not the chat.
+    FetchSubscriptionUsage {
+        agent_id: AgentId,
         /// Usage-modal fetch generation; echoed back on the task result.
         nonce: u64,
     },
@@ -2765,6 +2781,14 @@ pub enum TaskResult {
         agent_id: AgentId,
         session_id: acp::SessionId,
         error: String,
+        nonce: u64,
+    },
+    /// `/usage` third-party subscription quota resolved. `Err` is a whole-call
+    /// failure; a single provider failing instead arrives as a row carrying its
+    /// own `error`.
+    SubscriptionUsageComplete {
+        agent_id: AgentId,
+        result: Result<Vec<xai_grok_shell::auth::providers::usage::ProviderUsage>, String>,
         nonce: u64,
     },
     /// Feedback submitted successfully (fire-and-forget).

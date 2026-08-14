@@ -1227,15 +1227,46 @@ mod slash_menu_enter_tests {
         }
     }
 
+    /// Uses `/logout` because it accepts no arguments: Enter on a highlighted
+    /// argument-less command sends it outright. An args-accepting command
+    /// (`/login [provider]`, `/compact [ctx]`) instead completes to
+    /// `"/cmd "` and opens its argument dropdown — covered separately below.
     #[test]
     fn enter_sends_highlighted_command_not_typed_prefix() {
+        let mut agent = agent_with_slash("/log");
+        select_display(&mut agent, "/logout");
+        let outcome = agent.handle_prompt_key_for_test(&enter());
+        assert!(
+            matches!(outcome, InputOutcome::Action(Action::SendPrompt(ref text)) if text == "/logout"),
+            "got {outcome:?}; prompt={:?}",
+            agent.prompt.text()
+        );
+    }
+
+    /// `/login` accepts an optional provider, so selecting it from the menu
+    /// completes to `"/login "` and reveals the provider dropdown rather than
+    /// firing immediately. Typing it in full still executes on Enter, which
+    /// keeps the common xAI re-auth path a single keystroke.
+    #[test]
+    fn enter_on_login_completes_for_provider_choice_but_full_text_still_sends() {
         let mut agent = agent_with_slash("/log");
         select_display(&mut agent, "/login");
         let outcome = agent.handle_prompt_key_for_test(&enter());
         assert!(
-            matches!(outcome, InputOutcome::Action(Action::SendPrompt(ref text)) if text == "/login"),
-            "got {outcome:?}; prompt={:?}",
-            agent.prompt.text()
+            matches!(outcome, InputOutcome::Changed),
+            "selecting an args-accepting command should complete it, got {outcome:?}"
+        );
+        assert_eq!(agent.prompt.text(), "/login ");
+
+        // `/login` now requires a provider, so Enter on a bare one must NOT
+        // send: it opens the picker instead of committing to the xAI flow.
+        // With three accounts signed in, the reason to type `/login` is to
+        // choose, and the old behavior chose for you.
+        let mut agent = agent_with_slash("/login");
+        let outcome = agent.handle_prompt_key_for_test(&enter());
+        assert!(
+            !matches!(outcome, InputOutcome::Action(Action::SendPrompt(_))),
+            "a bare /login must not send; it must offer the providers, got {outcome:?}"
         );
     }
 

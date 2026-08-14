@@ -254,6 +254,9 @@ pub(super) fn build_grok_auth(
         expires_at: tokens.expires_in.map(|s| now + Duration::seconds(s as i64)),
         oidc_issuer: Some(issuer.to_owned()),
         oidc_client_id: Some(client_id.to_owned()),
+        provider: super::super::providers::SubscriptionProvider::Xai,
+        account_id: None,
+        subscription_tier: None,
     }
 }
 #[derive(Debug, Clone, Deserialize)]

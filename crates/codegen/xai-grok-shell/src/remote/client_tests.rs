@@ -332,6 +332,9 @@ fn test_auth() -> GrokAuth {
         expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
         oidc_issuer: None,
         oidc_client_id: None,
+        provider: crate::auth::SubscriptionProvider::Xai,
+        account_id: None,
+        subscription_tier: None,
     }
 }
 fn test_auth_manager() -> Arc<crate::auth::AuthManager> {

@@ -70,6 +70,75 @@ fn apply_cache_breakpoints(
     }
 }
 
+pub const CLAUDE_CODE_SYSTEM_IDENTITY: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+
+pub const CLAUDE_CODE_TOOLS: [&str; 17] = [
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "KillShell",
+    "NotebookEdit",
+    "Skill",
+    "Task",
+    "TaskOutput",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+];
+
+pub fn to_claude_code_tool_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "read" | "read_file" | "view" | "read_file_or_dir" => "Read".to_string(),
+        "write" | "write_file" | "create_file" => "Write".to_string(),
+        "edit" | "edit_file" | "str_replace" | "replace" => "Edit".to_string(),
+        "bash" | "sh" | "terminal" | "shell" | "exec" => "Bash".to_string(),
+        "grep" | "grep_search" => "Grep".to_string(),
+        "glob" | "file_search" | "find" => "Glob".to_string(),
+        "askuserquestion" | "ask_user_question" | "ask_question" | "question" => {
+            "AskUserQuestion".to_string()
+        }
+        "enterplanmode" | "enter_plan_mode" | "plan_mode" => "EnterPlanMode".to_string(),
+        "exitplanmode" | "exit_plan_mode" => "ExitPlanMode".to_string(),
+        "killshell" | "kill_shell" | "kill_process" => "KillShell".to_string(),
+        "notebookedit" | "notebook_edit" | "edit_notebook" => "NotebookEdit".to_string(),
+        "skill" => "Skill".to_string(),
+        "task" => "Task".to_string(),
+        "taskoutput" | "task_output" => "TaskOutput".to_string(),
+        "todowrite" | "todo_write" | "todo" => "TodoWrite".to_string(),
+        "webfetch" | "web_fetch" | "fetch" => "WebFetch".to_string(),
+        "websearch" | "web_search" | "search" => "WebSearch".to_string(),
+        _ => {
+            for &canonical in &CLAUDE_CODE_TOOLS {
+                if canonical.eq_ignore_ascii_case(name) {
+                    return canonical.to_string();
+                }
+            }
+            name.to_string()
+        }
+    }
+}
+
+/// Extended-thinking budget for upstream Anthropic, which takes a token count
+/// rather than xAI's symbolic effort. Kept comfortably under the smallest
+/// `max_tokens` in the catalog (64k) so `budget_tokens < max_tokens` holds,
+/// which the API requires.
+fn anthropic_thinking_budget(effort: &str) -> u32 {
+    match effort {
+        "low" => 4_096,
+        "medium" => 16_384,
+        // `high` and anything newer/unknown get the deep budget.
+        _ => 32_768,
+    }
+}
+
 /// Convert a `ConversationRequest` into a Messages API request.
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
@@ -77,13 +146,20 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
     };
 
+    let shaping = req.messages_shaping.unwrap_or_default();
+    let claude_casing = shaping.claude_tool_casing;
+    // The impersonated path must speak upstream Anthropic, not the xAI
+    // Messages dialect; reuse the identity flag that marks that path.
+    let claude_native_thinking = shaping.inject_claude_identity;
+
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
     let mut pending_assistant: Vec<ContentBlock> = Vec::new();
     let mut pending_tool_results: Vec<ContentBlock> = Vec::new();
 
     let sanitize_tool_call_id = |id: &str| -> String {
-        id.chars()
+        let mut sanitized: String = id
+            .chars()
             .map(|c| {
                 if c.is_alphanumeric() || c == '_' || c == '-' {
                     c
@@ -91,7 +167,11 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     '_'
                 }
             })
-            .collect()
+            .collect();
+        if sanitized.len() > 64 {
+            sanitized.truncate(64);
+        }
+        sanitized
     };
 
     let content_parts_to_anthropic_blocks = |parts: &[ContentPart]| -> Vec<ContentBlock> {
@@ -196,9 +276,14 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 for tc in &a.tool_calls {
                     let input =
                         serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                    let name = if claude_casing {
+                        to_claude_code_tool_name(&tc.name)
+                    } else {
+                        tc.name.clone()
+                    };
                     pending_assistant.push(ContentBlock::ToolUse {
                         id: sanitize_tool_call_id(&tc.id),
-                        name: tc.name.clone(),
+                        name,
                         input,
                         cache_control: None,
                     });
@@ -276,6 +361,17 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
+    if shaping.inject_claude_identity {
+        system_blocks.insert(
+            0,
+            TextBlock {
+                r#type: "text".to_string(),
+                text: CLAUDE_CODE_SYSTEM_IDENTITY.to_string(),
+                cache_control: None,
+            },
+        );
+    }
+
     apply_cache_breakpoints(&mut system_blocks, &mut messages);
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
@@ -294,7 +390,11 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             req.tools
                 .iter()
                 .map(|t| ToolParam {
-                    name: t.name.clone(),
+                    name: if claude_casing {
+                        to_claude_code_tool_name(&t.name)
+                    } else {
+                        t.name.clone()
+                    },
                     description: t.description.clone(),
                     input_schema: t.parameters.clone(),
                 })
@@ -324,13 +424,31 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         });
 
     // thinking is driven by reasoning_effort only, not by json_schema.
-    let thinking = effort
-        .as_ref()
-        .map(|_| crate::messages::ThinkingConfig::Adaptive {
-            display: Some(crate::messages::ThinkingDisplay::Summarized),
-        });
+    //
+    // `adaptive` and the `output_config.effort` knob are xAI extensions to the
+    // Messages dialect. Upstream Anthropic rejects both — a request carrying
+    // adaptive thinking answers 400 "adaptive thinking is not supported on
+    // this model" — so the impersonated path emits the documented
+    // `{"type":"enabled","budget_tokens":N}` shape and no `output_config`.
+    let thinking = effort.as_ref().map(|e| {
+        if claude_native_thinking {
+            crate::messages::ThinkingConfig::Enabled {
+                budget_tokens: anthropic_thinking_budget(e),
+            }
+        } else {
+            crate::messages::ThinkingConfig::Adaptive {
+                display: Some(crate::messages::ThinkingDisplay::Summarized),
+            }
+        }
+    });
 
-    let output_config = if effort.is_some() || format.is_some() {
+    let output_config = if claude_native_thinking {
+        // `effort` is not a field upstream understands; the budget carries it.
+        format.map(|format| OutputConfig {
+            effort: None,
+            format: Some(format),
+        })
+    } else if effort.is_some() || format.is_some() {
         Some(OutputConfig { effort, format })
     } else {
         None

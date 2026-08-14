@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use xai_grok_auth::bearer_suffix;
 
 use super::is_xai_oauth2_issuer;
+use super::providers::SubscriptionProvider;
 
 pub(crate) const TOKEN_TTL: Duration = Duration::days(30);
 const DEFAULT_EARLY_INVALIDATION_SECS: u64 = 300; // 5 minutes
@@ -38,6 +39,8 @@ pub enum AuthMode {
     External,
     /// Plain API key (e.g. from grok-desktop login or `grok login --api-key`)
     ApiKey,
+    /// Third-party provider OAuth subscription login (Anthropic, OpenAI Codex)
+    SubscriptionOauth,
 }
 
 /// Wire value of `principal_type` for team OAuth principals (capitalized by
@@ -46,11 +49,17 @@ pub(crate) const TEAM_PRINCIPAL_TYPE: &str = "Team";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GrokAuth {
+    #[serde(default)]
+    pub provider: SubscriptionProvider,
     pub key: String,
     pub auth_mode: AuthMode,
     pub create_time: DateTime<Utc>,
     pub user_id: String,
     pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -147,7 +156,7 @@ impl GrokAuth {
                 .oidc_issuer
                 .as_deref()
                 .is_some_and(is_xai_oauth2_issuer),
-            AuthMode::ApiKey | AuthMode::WebLogin => false,
+            AuthMode::ApiKey | AuthMode::WebLogin | AuthMode::SubscriptionOauth => false,
         }
     }
 
@@ -166,7 +175,7 @@ impl GrokAuth {
         match self.auth_mode {
             AuthMode::WebLogin | AuthMode::Oidc => true,
             AuthMode::External => self.is_xai_auth(),
-            AuthMode::ApiKey => false,
+            AuthMode::ApiKey | AuthMode::SubscriptionOauth => false,
         }
     }
 
@@ -210,6 +219,7 @@ impl GrokAuth {
 impl Default for GrokAuth {
     fn default() -> Self {
         Self {
+            provider: SubscriptionProvider::default(),
             key: String::new(),
             auth_mode: AuthMode::Oidc,
             create_time: Utc::now(),
@@ -234,6 +244,8 @@ impl Default for GrokAuth {
             expires_at: None,
             oidc_issuer: None,
             oidc_client_id: None,
+            account_id: None,
+            subscription_tier: None,
         }
     }
 }
@@ -377,6 +389,9 @@ mod tests {
             expires_at: None,
             oidc_issuer: None,
             oidc_client_id: None,
+            provider: SubscriptionProvider::Xai,
+            account_id: None,
+            subscription_tier: None,
         }
     }
 
@@ -507,5 +522,66 @@ mod tests {
         );
         assert!(default_coding_data_retention_opt_out());
         assert!(GrokAuth::default().coding_data_retention_opt_out);
+    }
+
+    #[test]
+    fn legacy_auth_json_defaults_provider_to_xai() {
+        let json = r#"{
+            "key": "xai-test-key",
+            "auth_mode": "oidc",
+            "create_time": "2024-01-01T00:00:00Z",
+            "user_id": "test-user"
+        }"#;
+        let auth: GrokAuth = serde_json::from_str(json).unwrap();
+        assert_eq!(auth.provider, SubscriptionProvider::Xai);
+        assert_eq!(auth.auth_mode, AuthMode::Oidc);
+        assert!(auth.account_id.is_none());
+        assert!(auth.subscription_tier.is_none());
+    }
+
+    #[test]
+    fn subscription_oauth_rows_roundtrip() {
+        let auth = GrokAuth {
+            provider: SubscriptionProvider::Anthropic,
+            key: "sk-ant-oat-test".into(),
+            auth_mode: AuthMode::SubscriptionOauth,
+            create_time: Utc::now(),
+            user_id: "".into(),
+            refresh_token: Some("ant-refresh-token".into()),
+            account_id: None,
+            subscription_tier: Some("Pro".into()),
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&auth).unwrap();
+        let deserialized: GrokAuth = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.provider, SubscriptionProvider::Anthropic);
+        assert_eq!(deserialized.auth_mode, AuthMode::SubscriptionOauth);
+        assert_eq!(deserialized.key, "sk-ant-oat-test");
+        assert_eq!(
+            deserialized.refresh_token.as_deref(),
+            Some("ant-refresh-token")
+        );
+        assert_eq!(deserialized.subscription_tier.as_deref(), Some("Pro"));
+
+        let codex_auth = GrokAuth {
+            provider: SubscriptionProvider::OpenaiCodex,
+            key: "jwt-access-token".into(),
+            auth_mode: AuthMode::SubscriptionOauth,
+            create_time: Utc::now(),
+            user_id: "org-chatgpt-acc-123".into(),
+            account_id: Some("org-chatgpt-acc-123".into()),
+            subscription_tier: Some("Plus".into()),
+            ..Default::default()
+        };
+        let codex_serialized = serde_json::to_string(&codex_auth).unwrap();
+        let codex_deserialized: GrokAuth = serde_json::from_str(&codex_serialized).unwrap();
+        assert_eq!(
+            codex_deserialized.provider,
+            SubscriptionProvider::OpenaiCodex
+        );
+        assert_eq!(
+            codex_deserialized.account_id.as_deref(),
+            Some("org-chatgpt-acc-123")
+        );
     }
 }

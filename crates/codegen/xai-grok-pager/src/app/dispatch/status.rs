@@ -53,6 +53,8 @@ pub(super) fn open_usage_info_modal(
     let usage_visible = app.usage_visible;
     let redirect_url = app.usage_billing_redirect_url.clone();
     let tier = app.subscription_tier.clone();
+    let subscription_providers = app.subscription_providers.clone();
+    let has_subscription_providers = !subscription_providers.is_empty();
     let show_resolved_model = app.show_resolved_model;
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
@@ -74,6 +76,7 @@ pub(super) fn open_usage_info_modal(
             chat_kind: agent.chat_kind,
             billing_redirect_url: redirect_url,
             subscription_tier: tier,
+            subscription_providers,
         },
     );
     state.fetch_nonce = nonce;
@@ -97,6 +100,16 @@ pub(super) fn open_usage_info_modal(
             nonce,
         });
     }
+    // Third-party quota is account-scoped, so it is fetched whenever any
+    // provider is configured -- even without a session.
+    if has_subscription_providers {
+        state.subscription_usage_loading = true;
+        effects.push(Effect::FetchSubscriptionUsage {
+            agent_id: id,
+            nonce,
+        });
+    }
+
     // Silent refresh of the cached billing mirrors the modal renders from.
     if billing_reachable {
         state.billing_loading = true;

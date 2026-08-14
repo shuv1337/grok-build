@@ -17,7 +17,12 @@ pub(super) fn task_model_override_error(
         return None;
     }
     let requested = requested?;
-    crate::agent::models::task_model_error_for_catalog(requested, available, is_session_auth)
+    crate::agent::models::task_model_error_for_catalog(
+        requested,
+        available,
+        is_session_auth,
+        crate::auth::LiveProviders::detect(&crate::util::grok_home::grok_home()),
+    )
 }
 /// Runtime adapter for one shell child. Shared lifecycle state is owned by the
 /// `xai-grok-tools` coordinator actor and reached only through `reporter`.

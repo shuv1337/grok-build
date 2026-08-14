@@ -56,10 +56,11 @@ pub(crate) fn resolve_default_model(
     cfg: &config::Config,
     catalog: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
+    live: crate::auth::LiveProviders,
 ) -> (String, ModelEntry, config::ConfigSource) {
     let visible: IndexMap<String, ModelEntry> = catalog
         .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth) && e.info.user_selectable)
+        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth, live) && e.info.user_selectable)
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
@@ -151,10 +152,11 @@ pub(crate) fn resolve_default_model(
 pub(crate) fn available_models(
     catalog: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
+    live: crate::auth::LiveProviders,
 ) -> IndexMap<acp::ModelId, acp::ModelInfo> {
     let visible: IndexMap<String, ModelEntry> = catalog
         .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth))
+        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth, live))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     config::to_acp_model_info(&visible)

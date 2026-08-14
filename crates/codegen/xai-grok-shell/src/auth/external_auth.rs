@@ -36,6 +36,9 @@ pub(crate) fn parse_output(output: &std::process::Output) -> anyhow::Result<Grok
         expires_at: parsed.expires_at,
         oidc_issuer: parsed.issuer,
         oidc_client_id: None,
+        provider: crate::auth::SubscriptionProvider::Xai,
+        account_id: None,
+        subscription_tier: None,
     })
 }
 

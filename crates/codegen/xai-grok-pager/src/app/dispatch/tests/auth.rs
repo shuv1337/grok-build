@@ -656,6 +656,41 @@ fn login_while_authenticating_aborts_prior_task() {
     );
 }
 
+/// `/login <provider>` must tag the Authenticate effect so the shell runs that
+/// provider's OAuth, while bare `/login` stays untagged (the xAI flow). The
+/// rest of the login machinery — view switch, seq bump, URL poll — is shared,
+/// so a provider sign-in gets the same copyable-URL and paste-box surface.
+#[test]
+fn login_with_provider_tags_authenticate_and_bare_login_does_not() {
+    let mut app = test_app_with_agent();
+    let effects = dispatch(Action::LoginWithProvider("anthropic".to_string()), &mut app);
+    let tagged = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Authenticate { provider, .. } => Some(provider.clone()),
+            _ => None,
+        })
+        .expect("provider login must emit Authenticate");
+    assert_eq!(tagged.as_deref(), Some("anthropic"));
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::PollAuthUrl { .. })),
+        "provider login must still poll for the auth URL so the TUI can show it"
+    );
+
+    let mut app = test_app_with_agent();
+    let effects = dispatch(Action::Login, &mut app);
+    let untagged = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Authenticate { provider, .. } => Some(provider.clone()),
+            _ => None,
+        })
+        .expect("bare login must emit Authenticate");
+    assert_eq!(untagged, None, "bare /login must remain the xAI flow");
+}
+
 /// A stale `AuthComplete` (from an attempt whose abort lost the race because
 /// the task had already finished) must not complete the new attempt: the
 /// request-seq guard is the only protection here.

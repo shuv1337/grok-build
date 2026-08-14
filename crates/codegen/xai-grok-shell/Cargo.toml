@@ -5,8 +5,12 @@ version = "1.0.3"
 edition.workspace = true
 
 [features]
-default = []
+default = ["grok_build_alt_providers"]
 dhat-heap = ["dep:dhat"]
+# Anthropic (Claude Pro/Max) and OpenAI Codex (ChatGPT Plus/Pro) subscription
+# providers: login flows, catalogs, and wire shaping. On by default in this
+# fork; one flip disables the whole surface if a provider changes terms.
+grok_build_alt_providers = []
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
 # it via `required-features`.

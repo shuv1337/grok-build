@@ -245,6 +245,14 @@ pub(crate) fn build_refresher(
     auth_provider_command: Option<String>,
     diagnostic_uploader: Option<DiagnosticUploader>,
 ) -> Arc<dyn TokenRefresher> {
+    if auth_manager.auth_scope().starts_with("anthropic::") {
+        let snapshot: Arc<dyn AuthSnapshot> = auth_manager;
+        return Arc::new(crate::auth::anthropic::AnthropicRefresher::new(snapshot));
+    }
+    if auth_manager.auth_scope().starts_with("openai-codex::") {
+        let snapshot: Arc<dyn AuthSnapshot> = auth_manager;
+        return Arc::new(crate::auth::openai_codex::CodexRefresher::new(snapshot));
+    }
     match auth_provider_command {
         Some(cmd) => {
             let runner: Arc<dyn ExternalCommandRunner> = auth_manager;

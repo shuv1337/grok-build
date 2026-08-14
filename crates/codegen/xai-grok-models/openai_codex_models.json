@@ -1,0 +1,107 @@
+{
+  "models": [
+    {
+      "id": "gpt-5.6-luna",
+      "model": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "description": "OpenAI's latest flagship high-reasoning coding model",
+      "context_window": 272000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "reasoning_efforts": [
+        { "value": "max", "id": "max", "label": "max", "description": "Maximum reasoning" },
+        { "value": "xhigh", "id": "xhigh", "label": "xhigh", "description": "Extended reasoning" },
+        { "value": "high", "id": "high", "label": "high", "description": "Heavy reasoning" },
+        { "value": "medium", "id": "medium", "label": "medium", "description": "Balanced reasoning" },
+        { "value": "low", "id": "low", "label": "low", "description": "Faster, lighter reasoning" }
+      ],
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "model": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol",
+      "description": "OpenAI's balanced medium-reasoning model",
+      "context_window": 272000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "medium",
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "name": "GPT-5.6 Terra",
+      "description": "OpenAI's fast low-reasoning execution model",
+      "context_window": 272000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "low",
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-5.5",
+      "model": "gpt-5.5",
+      "name": "GPT-5.5",
+      "description": "OpenAI's GPT-5.5 frontier model",
+      "context_window": 272000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-5.4",
+      "model": "gpt-5.4",
+      "name": "GPT-5.4",
+      "description": "OpenAI's GPT-5.4 coding model",
+      "context_window": 272000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "model": "gpt-5.4-mini",
+      "name": "GPT-5.4 Mini",
+      "description": "OpenAI's compact fast model",
+      "context_window": 128000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "medium",
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "model": "gpt-5.3-codex-spark",
+      "name": "GPT-5.3 Codex Spark",
+      "description": "OpenAI's rapid code reasoning model",
+      "context_window": 128000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "openai_codex"
+    },
+    {
+      "id": "gpt-daybreak-blue-latest",
+      "model": "gpt-daybreak-blue-latest",
+      "name": "GPT Daybreak Blue Latest",
+      "description": "OpenAI's specialized Daybreak Blue model",
+      "context_window": 272000,
+      "max_completion_tokens": 128000,
+      "api_backend": "responses",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "openai_codex"
+    }
+  ]
+}

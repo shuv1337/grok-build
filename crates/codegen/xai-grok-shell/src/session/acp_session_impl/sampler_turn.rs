@@ -432,6 +432,8 @@ impl SessionActor {
             });
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
+        let model_provider =
+            crate::agent::config::resolve_model_subscription_provider(cfg.model.as_str());
         let auth_method = self.auth_method_id.load();
         let gate =
             SessionTokenAuthGate::new(auth_method.as_deref(), model_facts.byok, &cfg.base_url);
@@ -492,6 +494,15 @@ impl SessionActor {
             top_p: cfg.top_p,
             api_backend: cfg.api_backend,
             auth_scheme,
+            // Derived from the *model*, not from this session's credential:
+            // an xAI-authenticated session calling a Claude model must still
+            // present as Claude Code. See
+            // `resolve_model_subscription_provider`.
+            wire_identity: model_provider
+                .map(|p| p.wire_identity())
+                .unwrap_or(xai_grok_sampler::WireIdentity::Grok),
+            system_prompt_as_instructions: model_provider
+                == Some(crate::auth::SubscriptionProvider::OpenaiCodex),
             extra_headers,
             extra_response_includes,
             query_params: cfg.query_params.clone(),
@@ -1164,6 +1175,25 @@ impl SessionActor {
         request: ConversationRequest,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         self.prepare_sampler_for_turn().await;
+
+        let mut request = request;
+        if let Some(cfg) = self.chat_state_handle.get_sampling_config().await {
+            if cfg.api_backend == xai_grok_sampling_types::ApiBackend::Messages {
+                request.messages_shaping = Some(xai_grok_sampling_types::MessagesShaping {
+                    inject_claude_identity: true,
+                    claude_tool_casing: true,
+                });
+                for item in &mut request.items {
+                    if let xai_grok_sampling_types::ConversationItem::System(s) = item {
+                        s.content =
+                            crate::auth::anthropic::wire::debrand_system_prompt(&s.content).into();
+                    }
+                }
+            } else if cfg.api_backend == xai_grok_sampling_types::ApiBackend::Responses {
+                request.parallel_tool_calls = Some(true);
+            }
+        }
+
         let stream_drained_rx = {
             let (tx, rx) = tokio::sync::oneshot::channel();
             *self.turn_stream_drained.lock() = Some(tx);

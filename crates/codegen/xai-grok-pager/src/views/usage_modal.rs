@@ -74,6 +74,9 @@ pub struct UsageInfoContext {
     pub billing_redirect_url: Option<String>,
     /// Plan name for the allowance header (e.g. "SuperGrok").
     pub subscription_tier: Option<String>,
+    /// Third-party subscription providers and whether each is signed in.
+    /// Empty when the alt-provider feature is off, which renders nothing.
+    pub subscription_providers: Vec<xai_grok_shell::auth::SubscriptionProviderStatus>,
 }
 
 /// Modal state. Billing figures are NOT stored here — the render reads the
@@ -94,6 +97,11 @@ pub struct UsageInfoModalState {
     pub session_usage_text: Option<String>,
     pub billing_loading: bool,
     pub billing_error: Option<String>,
+    /// Live third-party quota, `None` until the fetch lands.
+    pub subscription_usage: Option<Vec<xai_grok_shell::auth::providers::usage::ProviderUsage>>,
+    /// Whole-call failure (the per-provider case rides on the row itself).
+    pub subscription_usage_error: Option<String>,
+    pub subscription_usage_loading: bool,
     /// Fetch generation stamped at open; results from an earlier open (same
     /// session, modal reopened) are dropped instead of overwriting.
     pub fetch_nonce: u64,
@@ -178,6 +186,9 @@ impl UsageInfoModalState {
             session_usage_text: None,
             billing_loading: false,
             billing_error: None,
+            subscription_usage: None,
+            subscription_usage_error: None,
+            subscription_usage_loading: false,
             fetch_nonce: 0,
             session_fields: None,
             copy_hits: Vec::new(),
@@ -846,7 +857,149 @@ fn usage_limit_lines(
         }
         lines.push(muted_line(theme, "Loading session usage\u{2026}"));
     }
+
+    lines.extend(subscription_lines(state, theme));
     lines
+}
+
+/// Quota bars for the alternative subscription providers.
+///
+/// Both backends expose the same quota their own first-party CLIs render
+/// (`/api/oauth/usage`, `/backend-api/wham/usage`), so these are measured
+/// numbers, not estimates. A provider that cannot be reached shows the reason
+/// on its own row and never blocks the others.
+fn subscription_lines(state: &UsageInfoModalState, theme: &Theme) -> Vec<Line<'static>> {
+    let providers = &state.ctx.subscription_providers;
+    if providers.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<Line<'static>> = vec![Line::default()];
+    lines.push(Line::styled("Subscriptions", header_style(theme)));
+
+    let usage = state.subscription_usage.as_deref().unwrap_or(&[]);
+
+    for p in providers {
+        let live = usage.iter().find(|u| u.id == p.id);
+
+        // Header: provider name, plus the plan when either side knows it.
+        let plan = live
+            .and_then(|u| u.plan.as_deref())
+            .or(p.tier.as_deref())
+            .filter(|t| !t.trim().is_empty());
+        let mut header = vec![Span::styled(
+            p.display_name.clone(),
+            Style::default().fg(theme.text_primary),
+        )];
+        if let Some(plan) = plan {
+            header.push(Span::styled(
+                format!("  {plan}"),
+                Style::default().fg(theme.gray_bright),
+            ));
+        }
+        lines.push(Line::from(header));
+
+        if !p.connected {
+            lines.push(muted_line(
+                theme,
+                format!("  Not signed in \u{2014} /login {}", p.id),
+            ));
+            continue;
+        }
+
+        match live {
+            // Per-provider failure: say which provider and why.
+            Some(u) if u.error.is_some() => {
+                lines.push(muted_line(
+                    theme,
+                    format!("  {}", u.error.as_deref().unwrap_or("unavailable")),
+                ));
+            }
+            Some(u) if !u.windows.is_empty() => {
+                let label_width = u
+                    .windows
+                    .iter()
+                    .map(|w| w.label.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                for w in &u.windows {
+                    lines.push(quota_bar_line(w, label_width, theme));
+                }
+            }
+            // Reached the provider, which reported no caps.
+            Some(_) => lines.push(muted_line(theme, "  No limits reported")),
+            None if state.subscription_usage_loading => {
+                lines.push(muted_line(theme, "  Loading\u{2026}"))
+            }
+            None => lines.push(muted_line(
+                theme,
+                format!(
+                    "  {}",
+                    state
+                        .subscription_usage_error
+                        .as_deref()
+                        .unwrap_or("Usage unavailable")
+                ),
+            )),
+        }
+    }
+    lines
+}
+
+/// One `label ▓▓░░░ 34% · Aug 16 11:00` row.
+///
+/// The bar is narrower than the xAI allowance bar above it because these rows
+/// carry a label and a reset time on the same line.
+fn quota_bar_line(
+    window: &xai_grok_shell::auth::providers::usage::UsageWindow,
+    label_width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    const BAR_WIDTH: usize = 12;
+    let pct = window.used_percent.clamp(0.0, 100.0);
+    let filled = (((pct / 100.0) * BAR_WIDTH as f64).round() as usize).min(BAR_WIDTH);
+
+    let mut spans = vec![
+        Span::styled(
+            format!(
+                "  {:label_width$} ",
+                window.label,
+                label_width = label_width
+            ),
+            Style::default().fg(theme.text_primary),
+        ),
+        Span::styled(
+            "\u{2588}".repeat(filled),
+            Style::default().fg(theme.gray_bright),
+        ),
+        Span::styled(
+            "\u{2591}".repeat(BAR_WIDTH - filled),
+            Style::default().fg(theme.gray_dim),
+        ),
+        // Floored, matching how the xAI allowance bar reports its percentage.
+        Span::styled(
+            format!(" {:>3}%", pct.floor() as i64),
+            Style::default().fg(theme.text_primary),
+        ),
+    ];
+    if let Some(reset) = window.resets_at.as_deref().and_then(format_reset_short) {
+        spans.push(Span::styled(
+            format!("  {reset}"),
+            Style::default().fg(theme.gray_dim),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// RFC3339 → a compact local-time stamp. `None` when unparseable, so a bad
+/// timestamp drops the suffix instead of showing a raw ISO string.
+fn format_reset_short(rfc3339: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .ok()
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%b %-d %H:%M")
+                .to_string()
+        })
 }
 
 fn allowance_lines(
@@ -1017,6 +1170,7 @@ mod tests {
                 chat_kind: false,
                 billing_redirect_url: None,
                 subscription_tier: Some("SuperGrok".to_string()),
+                subscription_providers: Vec::new(),
             },
         )
     }
@@ -1079,6 +1233,172 @@ mod tests {
         assert!(
             !text.iter().any(|l| l.to_lowercase().contains("top")),
             "no auto top-up surface: {text:?}"
+        );
+    }
+
+    /// The Subscriptions section lists every enabled alternative provider and
+    /// tells an unconnected one how to sign in. It reports connection state,
+    /// not a consumption bar — neither provider exposes a usage endpoint.
+    #[test]
+    fn usage_limit_tab_lists_subscription_providers() {
+        use xai_grok_shell::auth::SubscriptionProviderStatus;
+        let theme = Theme::current();
+        let mut state = state_with_session();
+        state.ctx.subscription_providers = vec![
+            SubscriptionProviderStatus {
+                id: "anthropic".into(),
+                display_name: "Claude (Pro/Max)".into(),
+                connected: true,
+                tier: Some("Max".into()),
+            },
+            SubscriptionProviderStatus {
+                id: "openai-codex".into(),
+                display_name: "ChatGPT (Plus/Pro)".into(),
+                connected: false,
+                tier: None,
+            },
+        ];
+        use xai_grok_shell::auth::providers::usage::{ProviderUsage, UsageWindow};
+        state.subscription_usage = Some(vec![ProviderUsage {
+            id: "anthropic".into(),
+            display_name: "Claude (Pro/Max)".into(),
+            connected: true,
+            plan: None,
+            windows: vec![
+                UsageWindow {
+                    label: "Session".into(),
+                    used_percent: 2.0,
+                    resets_at: None,
+                },
+                UsageWindow {
+                    label: "Weekly".into(),
+                    used_percent: 34.0,
+                    resets_at: None,
+                },
+            ],
+            error: None,
+        }]);
+
+        let lines = usage_limit_lines(&state, None, &theme);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+
+        assert!(
+            text.iter().any(|l| l == "Subscriptions"),
+            "missing header: {text:?}"
+        );
+        // Plan falls back to the credential's tier when the endpoint names none.
+        assert!(
+            text.iter()
+                .any(|l| l.contains("Claude (Pro/Max)") && l.contains("Max")),
+            "provider header with plan: {text:?}"
+        );
+        let weekly = text
+            .iter()
+            .find(|l| l.contains("Weekly"))
+            .expect("weekly row");
+        assert!(
+            weekly.contains("34%") && weekly.contains('\u{2588}'),
+            "a quota row must show a measured percentage and a bar: {weekly:?}"
+        );
+
+        let not_signed_in = text
+            .iter()
+            .find(|l| l.contains("/login openai-codex"))
+            .expect("codex hint row");
+        assert!(
+            not_signed_in.contains("Not signed in"),
+            "an unconnected provider must name the fix: {not_signed_in:?}"
+        );
+    }
+
+    /// A provider that answered with an error shows *that provider's* reason
+    /// and must not suppress a healthy provider's bars.
+    #[test]
+    fn one_provider_failing_does_not_hide_the_other() {
+        use xai_grok_shell::auth::SubscriptionProviderStatus;
+        use xai_grok_shell::auth::providers::usage::{ProviderUsage, UsageWindow};
+
+        let theme = Theme::current();
+        let mut state = state_with_session();
+        state.ctx.subscription_providers = ["anthropic", "openai-codex"]
+            .into_iter()
+            .map(|id| SubscriptionProviderStatus {
+                id: id.into(),
+                display_name: id.into(),
+                connected: true,
+                tier: None,
+            })
+            .collect();
+        state.subscription_usage = Some(vec![
+            ProviderUsage {
+                id: "anthropic".into(),
+                display_name: "anthropic".into(),
+                connected: true,
+                plan: None,
+                windows: vec![UsageWindow {
+                    label: "Weekly".into(),
+                    used_percent: 34.0,
+                    resets_at: None,
+                }],
+                error: None,
+            },
+            ProviderUsage {
+                id: "openai-codex".into(),
+                display_name: "openai-codex".into(),
+                connected: true,
+                plan: None,
+                windows: vec![],
+                error: Some("rate limited".into()),
+            },
+        ]);
+
+        let text: Vec<String> = usage_limit_lines(&state, None, &theme)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+
+        assert!(
+            text.iter().any(|l| l.contains("34%")),
+            "healthy provider must still render: {text:?}"
+        );
+        assert!(
+            text.iter().any(|l| l.contains("rate limited")),
+            "the failing provider must say why: {text:?}"
+        );
+    }
+
+    /// Reset timestamps are localized, never shown as a raw ISO string.
+    #[test]
+    fn quota_row_localizes_reset_timestamp() {
+        use xai_grok_shell::auth::providers::usage::UsageWindow;
+        let line = quota_bar_line(
+            &UsageWindow {
+                label: "Weekly".into(),
+                used_percent: 34.0,
+                resets_at: Some("2026-08-16T18:00:00.224067+00:00".into()),
+            },
+            6,
+            &Theme::current(),
+        )
+        .to_string();
+        assert!(
+            !line.contains("2026-08-16T"),
+            "raw RFC3339 must not reach the pane: {line:?}"
+        );
+        assert!(line.contains("Aug 16"), "expected a short date: {line:?}");
+    }
+
+    /// With the feature off (or no providers), the section is absent entirely
+    /// rather than rendering an empty header.
+    #[test]
+    fn usage_limit_tab_omits_subscriptions_when_none() {
+        let theme = Theme::current();
+        let state = state_with_session();
+        let lines = usage_limit_lines(&state, None, &theme);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert!(
+            !text.iter().any(|l| l == "Subscriptions"),
+            "no providers should render no section: {text:?}"
         );
     }
 

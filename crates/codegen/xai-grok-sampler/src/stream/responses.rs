@@ -151,6 +151,10 @@ pub(crate) fn stream_responses_tracked<'a>(
         }
 
         let mut final_response: Option<rs::Response> = None;
+        // Every item the stream reported as done, kept as a fallback for
+        // backends whose terminal event omits `output`. See the reconciliation
+        // below `Build the final response`.
+        let mut streamed_output_items: Vec<rs::OutputItem> = Vec::new();
         let mut chunk_index: u64 = 0;
         let mut message_chunk_count: u64 = 0;
         let mut first_token_emitted = false;
@@ -416,6 +420,7 @@ pub(crate) fn stream_responses_tracked<'a>(
                 // For WebSearchCall this includes the query and source URLs.
                 // For CustomToolCall this includes x_search results.
                 ResponseStreamEvent::ResponseOutputItemDone(done_event) => {
+                    streamed_output_items.push(done_event.item.clone());
                     match &done_event.item {
                         rs::OutputItem::WebSearchCall(ws) => {
                             let result = serde_json::to_value(ws).ok();
@@ -491,6 +496,18 @@ pub(crate) fn stream_responses_tracked<'a>(
         }
 
         // ── Build the final response ─────────────────────────────────
+        //
+        // The ChatGPT Codex backend returns `"output": []` on
+        // `response.completed` — with `store: false` it never echoes the
+        // message back, so the only copy of the assistant turn is the
+        // `response.output_item.done` events already streamed. Taking the
+        // terminal event at its word there yields a response with no content,
+        // which reads as `EmptyResponse(NoVisibleContent)` and burns the whole
+        // retry budget re-asking a question that was in fact answered every
+        // time.
+        //
+        // Only fills a genuinely empty `output`, so a backend that does
+        // populate the terminal event (xAI) is untouched.
         let mut response = match final_response {
             Some(r) => r,
             None => {
@@ -512,6 +529,14 @@ pub(crate) fn stream_responses_tracked<'a>(
                 return;
             }
         };
+
+        if response.output.is_empty() && !streamed_output_items.is_empty() {
+            tracing::debug!(
+                items = streamed_output_items.len(),
+                "terminal event carried no output; using streamed output items"
+            );
+            response.output = std::mem::take(&mut streamed_output_items);
+        }
 
         // Billing fields (`prompt_tokens`, `completion_tokens`,
         // `cached_prompt_tokens`, `reasoning_tokens`) are the cumulative

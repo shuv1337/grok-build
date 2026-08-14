@@ -23,6 +23,14 @@ pub enum AuthScheme {
     XApiKey,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WireIdentity {
+    #[default]
+    Grok,
+    Impersonated,
+}
+
 /// All knobs that control a single sampling request.
 ///
 /// The session typically owns one `SamplerConfig` per active model
@@ -56,6 +64,10 @@ pub struct SamplerConfig {
     pub api_backend: ApiBackend,
     #[serde(default)]
     pub auth_scheme: AuthScheme,
+    #[serde(default)]
+    pub wire_identity: WireIdentity,
+    #[serde(default)]
+    pub system_prompt_as_instructions: bool,
     /// Extra request headers applied verbatim. The sampler never inspects
     /// the URL to derive headers; callers (the session) inject proxy auth
     /// and other access headers here before constructing the config.
@@ -149,6 +161,8 @@ impl Default for SamplerConfig {
             top_p: None,
             api_backend: ApiBackend::default(),
             auth_scheme: AuthScheme::default(),
+            wire_identity: WireIdentity::default(),
+            system_prompt_as_instructions: false,
             extra_headers: IndexMap::new(),
             extra_response_includes: Vec::new(),
             query_params: IndexMap::new(),

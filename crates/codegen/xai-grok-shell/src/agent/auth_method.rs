@@ -355,6 +355,8 @@ pub(crate) enum ModelByok {
     Byok,
     /// Model has no per-model key (session auth governs).
     NotByok,
+    /// Model is a third-party subscription provider (Anthropic / OpenAI Codex).
+    SubscriptionOauth,
     /// Config couldn't be loaded/parsed — BYOK status indeterminate.
     Unknown,
 }
@@ -364,6 +366,7 @@ impl ModelByok {
         match self {
             Self::Byok => "byok",
             Self::NotByok => "not_byok",
+            Self::SubscriptionOauth => "subscription_oauth",
             Self::Unknown => "unknown",
         }
     }
@@ -395,7 +398,7 @@ pub(crate) fn session_token_auth_gate(
     is_session_based_method
         && match model_byok {
             ModelByok::NotByok => true,
-            ModelByok::Byok => false,
+            ModelByok::Byok | ModelByok::SubscriptionOauth => false,
             ModelByok::Unknown => endpoint_is_first_party,
         }
 }

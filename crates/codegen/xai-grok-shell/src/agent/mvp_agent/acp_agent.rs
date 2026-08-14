@@ -818,23 +818,44 @@ impl acp::Agent for MvpAgent {
                             ),
                             client_seq,
                         );
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => {
-                            cancelled = true;
-                            Err(anyhow::anyhow!("Authentication cancelled"))
+                    let channels = crate::auth::AuthChannels {
+                        url_tx: Some(url_tx),
+                        code_rx,
+                    };
+                    // `/login <provider>` runs that provider's OAuth over the
+                    // same channels, so the TUI's copyable-URL and paste-box
+                    // affordances are identical to the xAI flow.
+                    match auth_meta.subscription_provider() {
+                        Some(provider) => {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {
+                                    cancelled = true;
+                                    Err(anyhow::anyhow!("Authentication cancelled"))
+                                }
+                                r = crate::auth::run_provider_login(
+                                    provider,
+                                    channels,
+                                ) => r,
+                            }
                         }
-                        r = crate::auth::run_auth_flow_with_stderr_bridge(
-                            &self.auth_manager,
-                            grok_ctx,
-                            crate::auth::AuthChannels {
-                                url_tx: Some(url_tx),
-                                code_rx,
-                            },
-                            auth_meta.reauth,
-                            auth_meta.force_interactive,
-                            login_override,
-                        ) => r,
+                        None => {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {
+                                    cancelled = true;
+                                    Err(anyhow::anyhow!("Authentication cancelled"))
+                                }
+                                r = crate::auth::run_auth_flow_with_stderr_bridge(
+                                    &self.auth_manager,
+                                    grok_ctx,
+                                    channels,
+                                    auth_meta.reauth,
+                                    auth_meta.force_interactive,
+                                    login_override,
+                                ) => r,
+                            }
+                        }
                     }
                 } else {
                     let (cancel, _guard) = self.interactive_auth.begin(None, client_seq);
@@ -2235,6 +2256,7 @@ impl acp::Agent for MvpAgent {
             }
             "x.ai/session/repair" => crate::extensions::repair::handle(self, &args).await,
             "x.ai/session/usage" => crate::extensions::usage::handle(self, &args).await,
+            "x.ai/auth/subscription_usage" => crate::extensions::auth::handle(self, &args).await,
             "x.ai/memory/flush" | "x.ai/memory/rewrite" => {
                 crate::extensions::memory::handle(self, &args).await
             }

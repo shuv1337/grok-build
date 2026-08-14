@@ -337,6 +337,7 @@ pub(crate) async fn run_device_code_login_channels(
         let _ = tx.send(AuthUrlInfo {
             url: display_uri.clone(),
             mode: AuthUrlMode::Device,
+            provider: Some(crate::auth::SubscriptionProvider::Xai),
         });
     }
     open_browser_detached(&display_uri).await;
@@ -482,6 +483,9 @@ async fn build_auth(
         expires_at: tokens.expires_in.map(|s| now + Duration::seconds(s)),
         oidc_issuer: Some(issuer.to_owned()),
         oidc_client_id: Some(client_id.to_owned()),
+        provider: crate::auth::SubscriptionProvider::Xai,
+        account_id: None,
+        subscription_tier: None,
     };
 
     auth_manager.enrich_auth_inline(&mut auth).await;

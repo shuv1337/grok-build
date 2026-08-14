@@ -4,18 +4,12 @@
 //! Cross-references [`super::protocol`] for OIDC mechanics and
 //! [`super::super::AuthManager`] for credential persistence.
 
-use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    extract::{Query, State},
-    http::{Method, StatusCode},
-    response::Html,
-    routing::get,
+pub(crate) use crate::auth::pkce_loopback::{
+    Callback, CallbackResult, callback_page, parse_pasted_input as pkce_parse_pasted_input,
 };
-use tokio::net::TcpListener;
 
 use super::super::config::{GrokComConfig, OidcAuthConfig};
 use super::super::{AuthManager, GrokAuth};
@@ -27,321 +21,18 @@ use super::protocol::{
 
 /// Maximum time to wait for the browser OAuth callback (or manual paste of the code).
 /// 10 minutes is long enough for users who step away briefly during login.
-const AUTH_CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+pub(super) const AUTH_CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Parse user-pasted input into `(code, state)`.
-///
-/// Accepts two formats:
-///   1. Full callback URL: `http://127.0.0.1:PORT/callback?code=XXX&state=YYY`
-///   2. Bare authorization code: `abc123`
 fn parse_pasted_input(input: &str) -> Result<Callback, OidcError> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Err(OidcError::InvalidPastedInput("empty input".into()));
-    }
-
-    if let Ok(url) = url::Url::parse(input) {
-        let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
-        if let Some(code) = params.get("code") {
-            let state = params.get("state").cloned().unwrap_or_default();
-            return Ok(Callback {
-                code: code.clone(),
-                state,
-            });
+    pkce_parse_pasted_input(input).map_err(|e| {
+        if e == "empty input" {
+            OidcError::InvalidPastedInput("empty input".into())
+        } else if e.contains("URL has no 'code'") {
+            OidcError::InvalidPastedInput("URL has no 'code' query parameter".into())
+        } else {
+            OidcError::CallbackAuthFailed(e)
         }
-        if let Some(error) = params.get("error") {
-            let desc = params.get("error_description").cloned().unwrap_or_default();
-            return Err(OidcError::CallbackAuthFailed(if desc.is_empty() {
-                error.clone()
-            } else {
-                format!("{error}: {desc}")
-            }));
-        }
-        return Err(OidcError::InvalidPastedInput(
-            "URL has no 'code' query parameter".into(),
-        ));
-    }
-
-    Ok(Callback {
-        code: input.to_owned(),
-        state: String::new(),
     })
-}
-
-/// Render a styled callback page shown in the browser after the OAuth redirect.
-pub(crate) fn callback_page(title: &str, message: &str, is_success: bool) -> String {
-    let icon = if is_success {
-        // Grok logo
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 33 33"><path fill="currentColor" d="m13.237 21.04 11.082-8.19c.543-.4 1.32-.244 1.578.38 1.363 3.288.754 7.241-1.957 9.955-2.71 2.714-6.482 3.31-9.93 1.954l-3.765 1.745c5.401 3.697 11.96 2.782 16.059-1.324 3.251-3.255 4.258-7.692 3.317-11.693l.008.009c-1.365-5.878.336-8.227 3.82-13.031q.123-.17.247-.345l-4.585 4.59v-.014L13.234 21.044M10.95 23.031c-3.877-3.707-3.208-9.446.1-12.755 2.446-2.449 6.454-3.448 9.952-1.979L24.76 6.56c-.677-.49-1.545-1.017-2.54-1.387A12.465 12.465 0 0 0 8.675 7.901c-3.519 3.523-4.625 8.94-2.725 13.561 1.42 3.454-.907 5.898-3.251 8.364-.83.874-1.664 1.749-2.335 2.674l10.583-9.466"/></svg>"#
-    } else {
-        // X circle
-        r#"<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#ef4444"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>"#
-    };
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<meta name="color-scheme" content="light dark"/>
-<title>{title}</title>
-<style>
-  *{{margin:0;padding:0;box-sizing:border-box}}
-  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    display:flex;align-items:center;justify-content:center;min-height:100vh;
-    background:#0a0a0a;color:#e5e5e5}}
-  .card{{text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;padding:48px}}
-  h1{{font-size:18px;font-weight:600}}
-  p{{font-size:14px;color:#a3a3a3}}
-  @media(prefers-color-scheme:light){{
-    body{{background:#fafafa;color:#171717}}
-    p{{color:#525252}}
-  }}
-</style>
-</head>
-<body>
-  <div class="card">
-    {icon}
-    <h1>{title}</h1>
-    <p>{message}</p>
-  </div>
-</body>
-</html>"#,
-        title = title,
-        icon = icon,
-        message = message,
-    )
-}
-
-/// Build the axum router for the OIDC loopback callback server.
-fn build_callback_router(tx: tokio::sync::mpsc::Sender<CallbackResult>) -> Router {
-    let cors =
-        crate::auth::config::accounts_app_cors_layer(Method::GET).allow_private_network(true);
-
-    Router::new()
-        .route("/callback", get(handle_callback))
-        .layer(cors)
-        .with_state(tx)
-}
-
-async fn handle_callback(
-    State(tx): State<tokio::sync::mpsc::Sender<CallbackResult>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> (StatusCode, Html<String>) {
-    let result = parse_callback_params(&params);
-    let response = callback_response(&result);
-    if let Err(e) = tx.try_send(result) {
-        tracing::error!(?e, "OIDC: callback channel send failed; auth will time out");
-    }
-    response
-}
-
-fn parse_callback_params(params: &HashMap<String, String>) -> CallbackResult {
-    if let Some(code) = params.get("code") {
-        let state = params.get("state").cloned().unwrap_or_default();
-        tracing::debug!(state = %state, "OIDC: received code via loopback callback");
-        return Ok(Callback {
-            code: code.clone(),
-            state,
-        });
-    }
-    let error = params.get("error").cloned().unwrap_or_default();
-    let desc = params.get("error_description").cloned().unwrap_or_default();
-    tracing::error!(error = %error, desc = %desc, "OIDC: IdP returned error");
-    Err(if desc.is_empty() {
-        error
-    } else {
-        format!("{error}: {desc}")
-    })
-}
-
-fn callback_response(result: &CallbackResult) -> (StatusCode, Html<String>) {
-    let (title, message) = match result {
-        Ok(_) => (
-            "Signed in",
-            "You can close this window and return to Grok Build.",
-        ),
-        Err(_) => ("Access denied", "Close this window and try again."),
-    };
-    (
-        StatusCode::OK,
-        Html(callback_page(title, message, result.is_ok())),
-    )
-}
-
-/// Wait until stdin has data or `tx` is closed. Returns `false` if closed.
-#[cfg(unix)]
-fn wait_for_stdin_or_closed(
-    stdin: &std::io::Stdin,
-    tx: &tokio::sync::mpsc::Sender<CallbackResult>,
-) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let fd = stdin.as_raw_fd();
-    loop {
-        if tx.is_closed() {
-            return false;
-        }
-        let ready = unsafe {
-            let mut fds = std::mem::zeroed::<libc::pollfd>();
-            fds.fd = fd;
-            fds.events = libc::POLLIN;
-            libc::poll(&mut fds, 1, 200)
-        };
-        if ready > 0 {
-            return true;
-        }
-    }
-}
-
-fn spawn_stdin_reader(tx: tokio::sync::mpsc::Sender<CallbackResult>) {
-    tokio::task::spawn_blocking(move || {
-        use std::io::BufRead;
-        let stdin = std::io::stdin();
-        let mut buf = String::new();
-        loop {
-            #[cfg(unix)]
-            if !wait_for_stdin_or_closed(&stdin, &tx) {
-                tracing::debug!("OIDC: stdin reader exiting, channel closed");
-                return;
-            }
-            #[cfg(not(unix))]
-            if tx.is_closed() {
-                tracing::debug!("OIDC: stdin reader exiting, channel closed");
-                return;
-            }
-
-            buf.clear();
-            let mut handle = stdin.lock();
-            match handle.read_line(&mut buf) {
-                Ok(0) => return,
-                Ok(_) => {}
-                Err(_) => return,
-            }
-            drop(handle);
-
-            let trimmed = buf.trim().to_owned();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match parse_pasted_input(&trimmed) {
-                Ok(result) => {
-                    tracing::debug!("OIDC: received code via stdin paste");
-                    let _ = tx.blocking_send(Ok(result));
-                    return;
-                }
-                Err(OidcError::InvalidPastedInput(msg)) => {
-                    tracing::debug!(input = %msg, "OIDC: invalid stdin paste, retrying");
-                    eprintln!("  Invalid input: {msg}. Try again:");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "OIDC: stdin paste returned auth error");
-                    let _ = tx.blocking_send(Err(e.to_string()));
-                    return;
-                }
-            }
-        }
-    });
-}
-
-/// Race loopback callback against manual paste from `code_rx`.
-async fn race_callback_and_client_ui(
-    listener: TcpListener,
-    code_rx: &mut tokio::sync::mpsc::Receiver<String>,
-) -> anyhow::Result<Callback> {
-    tracing::debug!("OIDC: waiting for auth code (loopback + client paste)");
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<CallbackResult>(1);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let app = build_callback_router(tx.clone());
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await;
-    });
-
-    // Bridge client paste input into the callback channel.
-    let client_tx = tx.clone();
-    let client_bridge = async {
-        while let Some(code) = code_rx.recv().await {
-            match parse_pasted_input(&code) {
-                Ok(result) => {
-                    tracing::debug!("OIDC: received code via client paste");
-                    let _ = client_tx.send(Ok(result)).await;
-                    return;
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "OIDC: invalid client paste input");
-                }
-            }
-        }
-    };
-
-    drop(tx);
-
-    let result = tokio::select! {
-        r = tokio::time::timeout(AUTH_CALLBACK_TIMEOUT, rx.recv()) => {
-            r.map_err(|_| anyhow::Error::new(OidcError::CallbackTimeout))?
-                .ok_or_else(|| anyhow::Error::new(OidcError::CallbackChannelClosed))?
-        }
-        _ = client_bridge => {
-            rx.recv().await
-                .ok_or_else(|| anyhow::Error::new(OidcError::CallbackChannelClosed))?
-        }
-    };
-
-    let _ = shutdown_tx.send(());
-    let _ = server.await;
-
-    result.map_err(|e| anyhow::Error::new(OidcError::CallbackAuthFailed(e)))
-}
-
-/// Race loopback callback against stdin paste.
-async fn race_callback_and_stdin(
-    listener: TcpListener,
-    enable_stdin: bool,
-) -> anyhow::Result<Callback> {
-    tracing::debug!(
-        enable_stdin = enable_stdin,
-        "OIDC: waiting for auth code (loopback + stdin)"
-    );
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<CallbackResult>(1);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let app = build_callback_router(tx.clone());
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await;
-    });
-
-    if enable_stdin {
-        spawn_stdin_reader(tx.clone());
-    }
-
-    drop(tx);
-
-    let result = tokio::time::timeout(AUTH_CALLBACK_TIMEOUT, rx.recv())
-        .await
-        .map_err(|_| {
-            // "10 minutes" must match AUTH_CALLBACK_TIMEOUT above
-            tracing::error!("auth: timed out after 10 minutes waiting for auth code");
-            anyhow::Error::new(OidcError::CallbackTimeout)
-        })?
-        .ok_or_else(|| {
-            tracing::error!(
-                "OIDC: callback channel closed, no code received from loopback or stdin"
-            );
-            anyhow::Error::new(OidcError::CallbackChannelClosed)
-        })?;
-
-    let _ = shutdown_tx.send(());
-    let _ = server.await;
-
-    result.map_err(|e| anyhow::Error::new(OidcError::CallbackAuthFailed(e)))
 }
 
 /// Run the full OIDC login flow: discovery → PKCE → browser → callback → token exchange → persist.
@@ -390,16 +81,21 @@ pub async fn run_login_flow_with_config(
     // In local-dev mode, use a fixed callback port so the redirect_uri is stable
     // and can be pre-registered with the local OAuth2 provider. In production the
     // OS picks a random available port.
-    let callback_port: u16 = if super::super::config::use_local_auth() {
-        56121
+    let loopback_mode = if super::super::config::use_local_auth() {
+        // Local dev pre-registers the 127.0.0.1 form, which is what this flow
+        // has always sent — keep deriving it rather than pinning a constant.
+        crate::auth::pkce_loopback::LoopbackPort::Fixed {
+            port: 56121,
+            path: "/callback",
+            redirect_uri: "http://127.0.0.1:56121/callback",
+        }
     } else {
-        0
+        crate::auth::pkce_loopback::LoopbackPort::Ephemeral
     };
-    let listener = TcpListener::bind(("127.0.0.1", callback_port))
+    let listener = crate::auth::pkce_loopback::LoopbackListener::bind(loopback_mode)
         .await
         .map_err(|e| anyhow::Error::new(OidcError::BindLoopback(e.to_string())))?;
-    let port = listener.local_addr()?.port();
-    let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
+    let redirect_uri = listener.redirect_uri();
     let oauth2 = auth_manager.grok_com_config().oauth2.as_ref();
     let auth_url = build_authorize_url(
         oidc,
@@ -410,7 +106,7 @@ pub async fn run_login_flow_with_config(
         &state,
         &nonce,
     );
-    tracing::debug!(port = port, redirect_uri = %redirect_uri, "OIDC: callback server bound");
+    tracing::debug!(redirect_uri = %redirect_uri, "OIDC: callback server bound");
 
     let (url_tx, code_rx) = match channels {
         Some(ch) => (ch.url_tx, Some(ch.code_rx)),
@@ -451,18 +147,19 @@ pub async fn run_login_flow_with_config(
         let _ = tx.send(super::super::flow::AuthUrlInfo {
             url: auth_url.clone(),
             mode: super::super::flow::AuthUrlMode::Loopback,
+            provider: Some(crate::auth::SubscriptionProvider::Xai),
         });
     }
 
-    let Callback {
+    let crate::auth::pkce_loopback::Callback {
         code,
         state: received_state,
     } = if let Some(mut rx) = code_rx {
         // Client UI: race loopback against manual paste via code_rx.
-        race_callback_and_client_ui(listener, &mut rx).await?
+        crate::auth::pkce_loopback::race_callback_and_client_ui(listener, &mut rx, true).await?
     } else {
         // No client UI: race loopback against stdin paste.
-        race_callback_and_stdin(listener, use_stdin).await?
+        crate::auth::pkce_loopback::race_callback_and_stdin(listener, use_stdin, true).await?
     };
 
     // Validate state (skip for bare code paste where state is empty)
@@ -542,16 +239,6 @@ pub async fn run_login_flow_with_config(
     Ok((auth, true))
 }
 
-/// Successful OIDC callback payload.
-#[derive(Debug, PartialEq, Eq)]
-struct Callback {
-    code: String,
-    state: String,
-}
-
-/// Result from the OIDC callback: either a [`Callback`] or an IdP error message.
-type CallbackResult = Result<Callback, String>;
-
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::*;
@@ -584,9 +271,15 @@ mod tests {
         let pkce = generate_pkce();
         let state = "test-state".to_string();
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+        let loopback = crate::auth::pkce_loopback::LoopbackListener::Bound {
+            listener,
+            port,
+            path: "/callback",
+            registered_redirect: None,
+        };
         let _auth_url = build_authorize_url(
             &oidc_cfg,
             None,
@@ -601,14 +294,17 @@ mod tests {
         let Callback {
             code,
             state: received_state,
-        } = tokio::join!(race_callback_and_stdin(listener, false), async {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            reqwest::get(format!(
-                "http://127.0.0.1:{port}/callback?code=mock-auth-code&state={state}"
-            ))
-            .await
-            .unwrap();
-        })
+        } = tokio::join!(
+            crate::auth::pkce_loopback::race_callback_and_stdin(loopback, false, true),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                reqwest::get(format!(
+                    "http://127.0.0.1:{port}/callback?code=mock-auth-code&state={state}"
+                ))
+                .await
+                .unwrap();
+            }
+        )
         .0
         .unwrap();
 

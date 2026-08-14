@@ -124,7 +124,9 @@ pub(crate) fn execute(
             let abort_handle = tasks
                 .spawn(async move {
                     send_logout(&tx).await;
-                    send_authenticate(&tx, request_seq, method_id, use_oauth, false)
+                    // Account switching is xAI-only; provider sessions are
+                    // managed with `/login <provider>` and `grok logout`.
+                    send_authenticate(&tx, request_seq, method_id, use_oauth, false, None)
                         .await
                 });
             meta.auth_abort_handle = Some((request_seq, abort_handle));
@@ -2054,6 +2056,7 @@ pub(crate) fn execute(
             method_id,
             use_oauth,
             force_interactive,
+            provider,
         } => {
             let tx = acp_tx.clone();
             let abort_handle = tasks
@@ -2064,6 +2067,7 @@ pub(crate) fn execute(
                             method_id,
                             use_oauth,
                             force_interactive,
+                            provider,
                         )
                         .await
                 });
@@ -3465,6 +3469,17 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::FetchSubscriptionUsage { agent_id, nonce } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    TaskResult::SubscriptionUsageComplete {
+                        agent_id,
+                        result: fetch_subscription_usage(&tx).await,
+                        nonce,
+                    }
+                });
+        }
         Effect::SendFeedback { agent_id, session_id, feedback_text } => {
             use xai_grok_shell::session::ClientType;
             use xai_grok_shell::session::acp_types::ClientFeedbackInput;
@@ -4493,6 +4508,34 @@ async fn fetch_session_usage(
         })?;
     Ok(parsed.usage)
 }
+/// `x.ai/auth/subscription_usage` — live Claude/ChatGPT quota for `/usage`.
+///
+/// A shell too old to know the method is reported as unsupported rather than as
+/// an error, matching how the other optional panels degrade.
+async fn fetch_subscription_usage(
+    tx: &AcpAgentTx,
+) -> Result<Vec<xai_grok_shell::auth::providers::usage::ProviderUsage>, String> {
+    let request = acp::ExtRequest::new(
+        "x.ai/auth/subscription_usage",
+        serde_json::value::to_raw_value(&serde_json::json!({}))
+            .expect("serialize subscription_usage params")
+            .into(),
+    );
+    let resp = acp_send(request, tx).await.map_err(|e| {
+        if i32::from(e.code) == i32::from(acp::Error::method_not_found().code) {
+            "not supported by this agent version".to_string()
+        } else {
+            sanitize_user_error(&e.to_string())
+        }
+    })?;
+    let parsed: xai_grok_shell::auth::providers::usage::SubscriptionUsageResponse =
+        serde_json::from_str(resp.0.get()).map_err(|e| {
+            tracing::debug!("subscription usage deser failed: {e}");
+            "invalid subscription usage response".to_string()
+        })?;
+    Ok(parsed.providers)
+}
+
 /// Shared `x.ai/session/rename` RPC for rename and `/rename --auto`.
 async fn session_rename_rpc(
     tx: &AcpAgentTx,

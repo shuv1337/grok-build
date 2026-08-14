@@ -234,6 +234,19 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
 /// restored once auth completes or is cancelled. Without this, `/login`
 /// with an external auth provider configured appeared to do nothing.
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+    dispatch_login_inner(app, None)
+}
+
+/// `/login <provider>`: same flow as [`dispatch_login`], but tags the attempt
+/// with a subscription provider so the shell runs that provider's OAuth
+/// instead of the xAI one. The TUI surface is identical — the provider flows
+/// publish their URL over the same channel, so the copyable-URL and paste-box
+/// affordances work unchanged.
+pub(super) fn dispatch_login_with_provider(app: &mut AppView, provider: String) -> Vec<Effect> {
+    dispatch_login_inner(app, Some(provider))
+}
+
+fn dispatch_login_inner(app: &mut AppView, provider: Option<String>) -> Vec<Effect> {
     ensure_login_method(app);
     let Some(method_id) = app.login_method_id.clone() else {
         app.auth_state = AuthState::Pending {
@@ -268,6 +281,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
             method_id,
             use_oauth: app.auth_use_oauth,
             force_interactive: true,
+            provider,
         },
         Effect::PollAuthUrl { request_seq },
     ]

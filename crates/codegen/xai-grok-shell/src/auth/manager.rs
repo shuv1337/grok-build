@@ -428,6 +428,74 @@ impl AuthManager {
     /// (inline `GROK_AUTH` vs. on-disk `auth.json`), which differ only in the
     /// threaded fields. One literal means a newly added field can't be silently
     /// dropped from one branch.
+    pub fn new_for_scope(grok_home: &Path, scope: String, grok_com_config: GrokComConfig) -> Self {
+        let proxy_base_url =
+            crate::agent::config::EndpointsConfig::from_effective_config().proxy_url();
+
+        let path = std::env::var("GROK_AUTH_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| grok_home.join("auth.json"));
+
+        if let Ok(inline_json) = std::env::var("GROK_AUTH")
+            && let Ok(auth) = serde_json::from_str::<GrokAuth>(&inline_json)
+        {
+            return Self::assemble(
+                Some(auth),
+                path,
+                scope,
+                grok_com_config,
+                proxy_base_url,
+                None,
+            );
+        }
+
+        let (auth, initial_disk_state) = match read_auth_json(&path) {
+            Ok(map) => {
+                let found = lookup_auth(&map, &scope);
+                (
+                    found.clone(),
+                    Some(if found.is_some() {
+                        DiskAuthState::Ok
+                    } else {
+                        DiskAuthState::EntryMissing
+                    }),
+                )
+            }
+            Err(_) => (None, Some(DiskAuthState::Unreadable)),
+        };
+
+        Self::assemble(
+            auth,
+            path,
+            scope,
+            grok_com_config,
+            proxy_base_url,
+            initial_disk_state,
+        )
+    }
+
+    pub fn for_provider(
+        grok_home: &Path,
+        provider: super::providers::SubscriptionProvider,
+        grok_com_config: &GrokComConfig,
+    ) -> Self {
+        match provider {
+            super::providers::SubscriptionProvider::Xai => {
+                Self::new(grok_home, grok_com_config.clone())
+            }
+            super::providers::SubscriptionProvider::Anthropic => Self::new_for_scope(
+                grok_home,
+                "anthropic::oauth".to_string(),
+                grok_com_config.clone(),
+            ),
+            super::providers::SubscriptionProvider::OpenaiCodex => Self::new_for_scope(
+                grok_home,
+                "openai-codex::oauth".to_string(),
+                grok_com_config.clone(),
+            ),
+        }
+    }
+
     fn assemble(
         inner: Option<GrokAuth>,
         path: PathBuf,
@@ -471,6 +539,10 @@ impl AuthManager {
             #[cfg(test)]
             devbox_override: parking_lot::Mutex::new(None),
         }
+    }
+
+    pub fn auth_scope(&self) -> &str {
+        &self.scope
     }
 
     /// Whether initialize's first-party env-key probe still allows advertising.
@@ -794,7 +866,7 @@ impl AuthManager {
     /// Cached token if still wire-valid ([`Self::is_token_hard_expired`]),
     /// ignoring the early-invalidation buffer. For sync callers that cannot
     /// refresh and must not demote a still-accepted token.
-    pub(crate) fn current_wire_valid(&self) -> Option<GrokAuth> {
+    pub fn current_wire_valid(&self) -> Option<GrokAuth> {
         let auth = self
             .inner
             .read()
@@ -879,7 +951,7 @@ impl AuthManager {
     ///
     /// Returns the input `GrokAuth` BEFORE enrichment lands; callers
     /// needing the post-enrichment view re-read `current()`.
-    pub(crate) async fn update(self: &Arc<Self>, auth: GrokAuth) -> std::io::Result<GrokAuth> {
+    pub async fn update(self: &Arc<Self>, auth: GrokAuth) -> std::io::Result<GrokAuth> {
         self.update_inner(auth, None).await
     }
 

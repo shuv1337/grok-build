@@ -2120,6 +2120,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 .await;
             }
             Command::Login {
+                provider,
                 legacy: _,
                 oauth,
                 device_auth,
@@ -2129,15 +2130,28 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox).await?;
+                let parsed_provider = provider
+                    .as_deref()
+                    .and_then(xai_grok_shell::auth::SubscriptionProvider::from_id);
+                xai_grok_shell::auth::run_cli_login_with_provider(
+                    &config,
+                    parsed_provider,
+                    oauth,
+                    device_auth,
+                    devbox,
+                )
+                .await?;
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Logout => {
+            Command::Logout { provider } => {
                 init_tracing_simple("cli");
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_logout(&config)?;
+                let parsed_provider = provider
+                    .as_deref()
+                    .and_then(xai_grok_shell::auth::SubscriptionProvider::from_id);
+                xai_grok_shell::auth::run_cli_logout_with_provider(&config, parsed_provider)?;
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
             Command::Wrap(ref wrap_args) => {

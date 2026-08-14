@@ -1,0 +1,112 @@
+{
+  "models": [
+    {
+      "id": "claude-opus-5",
+      "model": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "description": "Anthropic's flagship frontier model with maximum reasoning capability",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "model": "claude-opus-4-8",
+      "name": "Claude Opus 4.8",
+      "description": "Anthropic's high-depth reasoning model",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-opus-4-7",
+      "model": "claude-opus-4-7",
+      "name": "Claude Opus 4.7",
+      "description": "Anthropic's Opus 4.7 reasoning model",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-opus-4-6",
+      "model": "claude-opus-4-6",
+      "name": "Claude Opus 4.6",
+      "description": "Anthropic's Opus 4.6 reasoning model",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "model": "claude-sonnet-5",
+      "name": "Claude Sonnet 5",
+      "description": "Anthropic's most capable Sonnet model with fast frontier coding",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "model": "claude-sonnet-4-6",
+      "name": "Claude Sonnet 4.6",
+      "description": "Anthropic's Sonnet 4.6 model",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "model": "claude-sonnet-4-5",
+      "name": "Claude Sonnet 4.5",
+      "description": "Anthropic's Sonnet 4.5 coding model",
+      "context_window": 200000,
+      "max_completion_tokens": 64000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "model": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5",
+      "description": "Anthropic's high-speed compact model",
+      "context_window": 200000,
+      "max_completion_tokens": 64000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "medium",
+      "provider": "anthropic"
+    },
+    {
+      "id": "claude-fable-5",
+      "model": "claude-fable-5",
+      "name": "Claude Fable 5",
+      "description": "Anthropic's creative and exploratory model",
+      "context_window": 1000000,
+      "max_completion_tokens": 128000,
+      "api_backend": "messages",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "high",
+      "provider": "anthropic"
+    }
+  ]
+}

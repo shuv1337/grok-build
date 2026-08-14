@@ -1009,6 +1009,7 @@ pub(super) async fn send_authenticate(
     method_id: acp::AuthMethodId,
     use_oauth: bool,
     force_interactive: bool,
+    provider: Option<String>,
 ) -> TaskResult {
     let mut meta = serde_json::json!({
         "use_oauth": use_oauth,
@@ -1016,6 +1017,11 @@ pub(super) async fn send_authenticate(
     });
     if force_interactive {
         meta["force_interactive"] = serde_json::json!(true);
+    }
+    // Omitted for the xAI flow, so an older shell that ignores the field sees
+    // exactly the payload it always did.
+    if let Some(provider) = provider {
+        meta["provider"] = serde_json::json!(provider);
     }
     let req = acp::AuthenticateRequest::new(method_id).meta(meta.as_object().cloned());
     match acp_send(req, tx).await {

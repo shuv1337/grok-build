@@ -31,7 +31,7 @@ use xai_grok_sampling_types::{
     is_check_event, messages, rs,
 };
 
-use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
+use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig, WireIdentity};
 use crate::events::SamplingErrorInfo;
 use xai_grok_auth::bearer_suffix;
 
@@ -58,7 +58,14 @@ struct GrokRequestHeaders<'a> {
 }
 
 impl GrokRequestHeaders<'_> {
-    fn apply(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn apply(
+        &self,
+        builder: reqwest::RequestBuilder,
+        wire_identity: WireIdentity,
+    ) -> reqwest::RequestBuilder {
+        if wire_identity == WireIdentity::Impersonated {
+            return builder;
+        }
         let mut b = builder
             .header("x-grok-conv-id", self.conv_id)
             .header("x-grok-req-id", self.req_id)
@@ -394,6 +401,8 @@ struct ClientDefaults {
     top_p: Option<f32>,
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
+    wire_identity: WireIdentity,
+    system_prompt_as_instructions: bool,
     stream_tool_calls: bool,
     extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
@@ -621,46 +630,48 @@ impl SamplingClient {
             &mut headers,
         );
 
-        // Add x-grok-client-version header for version gating at the proxy.
-        if let Some(client_version) = config.client_version.as_ref()
-            && let Ok(header_value) = HeaderValue::from_str(client_version)
-        {
-            headers.insert(
-                HeaderName::from_static("x-grok-client-version"),
-                header_value,
-            );
-        }
-
-        if let Some(deployment_id) = config.deployment_id.as_ref()
-            && let Ok(header_value) = HeaderValue::from_str(deployment_id)
-        {
-            headers.insert(
-                HeaderName::from_static("x-grok-deployment-id"),
-                header_value,
-            );
-        }
-
-        if let Some(user_id) = config.user_id.as_ref()
-            && let Ok(header_value) = HeaderValue::from_str(user_id)
-        {
-            headers.insert(HeaderName::from_static("x-grok-user-id"), header_value);
-        }
-
-        {
-            let client_id = config
-                .client_identifier
-                .clone()
-                .unwrap_or_else(|| DEFAULT_CLIENT_IDENTIFIER.to_string());
-            if let Ok(header_value) = HeaderValue::from_str(&client_id) {
+        if config.wire_identity == WireIdentity::Grok {
+            // Add x-grok-client-version header for version gating at the proxy.
+            if let Some(client_version) = config.client_version.as_ref()
+                && let Ok(header_value) = HeaderValue::from_str(client_version)
+            {
                 headers.insert(
-                    HeaderName::from_static("x-grok-client-identifier"),
+                    HeaderName::from_static("x-grok-client-version"),
                     header_value,
                 );
             }
+
+            if let Some(deployment_id) = config.deployment_id.as_ref()
+                && let Ok(header_value) = HeaderValue::from_str(deployment_id)
+            {
+                headers.insert(
+                    HeaderName::from_static("x-grok-deployment-id"),
+                    header_value,
+                );
+            }
+
+            if let Some(user_id) = config.user_id.as_ref()
+                && let Ok(header_value) = HeaderValue::from_str(user_id)
+            {
+                headers.insert(HeaderName::from_static("x-grok-user-id"), header_value);
+            }
+
+            {
+                let client_id = config
+                    .client_identifier
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_CLIENT_IDENTIFIER.to_string());
+                if let Ok(header_value) = HeaderValue::from_str(&client_id) {
+                    headers.insert(
+                        HeaderName::from_static("x-grok-client-identifier"),
+                        header_value,
+                    );
+                }
+            }
         }
 
-        // Always set User-Agent: per-session origin if available, else fallback.
-        {
+        // Set User-Agent: extra_headers > per-session origin > fallback.
+        if !headers.contains_key(USER_AGENT) {
             let ua_string = match config.origin_client.as_ref() {
                 Some(origin) => user_agent_string_for(origin),
                 None => user_agent_string_for(&OriginClientInfo {
@@ -703,6 +714,8 @@ impl SamplingClient {
             top_p: config.top_p,
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
+            wire_identity: config.wire_identity,
+            system_prompt_as_instructions: config.system_prompt_as_instructions,
             stream_tool_calls: config.stream_tool_calls,
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
@@ -989,7 +1002,9 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("chat/completions"));
-        let http_request = grok_headers.apply(builder).json(&payload);
+        let http_request = grok_headers
+            .apply(builder, self.defaults.wire_identity)
+            .json(&payload);
 
         let response = http_request.send().await.map_err(|e| {
             // Log at debug level; errors are surfaced to the caller.
@@ -1050,7 +1065,7 @@ impl SamplingClient {
             sent_bearer,
         } = self.post(self.endpoint("chat/completions"));
         let http_request = grok_headers
-            .apply(builder)
+            .apply(builder, self.defaults.wire_identity)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .json(&streaming_request);
 
@@ -1221,6 +1236,41 @@ impl SamplingClient {
             includes.push(rs::IncludeEnum::ReasoningEncryptedContent);
         }
 
+        // The ChatGPT Codex backend rejects `max_output_tokens` outright
+        // (`400 Unsupported parameter`). It caps output itself, so dropping it
+        // costs nothing. Scoped to impersonated wires so the xAI path, which
+        // does honor the field, is untouched.
+        if self.defaults.wire_identity == WireIdentity::Impersonated {
+            request.inner.max_output_tokens = None;
+        }
+
+        if self.defaults.system_prompt_as_instructions {
+            let mut system_texts = Vec::new();
+            if let rs::InputParam::Items(ref mut items) = request.inner.input {
+                items.retain(|item| {
+                    if let rs::InputItem::EasyMessage(msg) = item
+                        && msg.role == rs::Role::System
+                    {
+                        match &msg.content {
+                            rs::EasyInputContent::Text(t) => system_texts.push(t.clone()),
+                            rs::EasyInputContent::ContentList(parts) => {
+                                for p in parts {
+                                    if let rs::InputContent::InputText(t) = p {
+                                        system_texts.push(t.text.clone());
+                                    }
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                    true
+                });
+            }
+            if !system_texts.is_empty() && request.inner.instructions.is_none() {
+                request.inner.instructions = Some(system_texts.join("\n\n"));
+            }
+        }
+
         Ok(())
     }
 
@@ -1272,7 +1322,9 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("responses"));
-        let http_request = grok_headers.apply(builder).json(&request_body);
+        let http_request = grok_headers
+            .apply(builder, self.defaults.wire_identity)
+            .json(&request_body);
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -1415,7 +1467,7 @@ impl SamplingClient {
             sent_bearer,
         } = self.post(self.endpoint("responses"));
         let mut http_request = grok_headers
-            .apply(builder)
+            .apply(builder, self.defaults.wire_identity)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         if let Some(policy) = self.defaults.doom_loop_recovery {
             http_request =
@@ -1620,7 +1672,9 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("messages"));
-        let http_request = grok_headers.apply(builder).json(&request.inner);
+        let http_request = grok_headers
+            .apply(builder, self.defaults.wire_identity)
+            .json(&request.inner);
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -1735,7 +1789,7 @@ impl SamplingClient {
             sent_bearer,
         } = self.post(self.endpoint("messages"));
         let http_request = grok_headers
-            .apply(builder)
+            .apply(builder, self.defaults.wire_identity)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .json(&request.inner);
 
@@ -2220,33 +2274,8 @@ mod tests {
             api_key: Some("test-key".to_string()),
             base_url: "https://example.test".to_string(),
             model: "test-model".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            api_backend: ApiBackend::ChatCompletions,
-            auth_scheme: AuthScheme::Bearer,
-            extra_headers: IndexMap::new(),
-            extra_response_includes: Vec::new(),
-            query_params: IndexMap::new(),
-            env_http_headers: IndexMap::new(),
             context_window: 8192,
-            force_http1: false,
-            max_retries: None,
-            stream_tool_calls: false,
-            idle_timeout_secs: None,
-            reasoning_effort: None,
-            origin_client: None,
-            client_identifier: None,
-            deployment_id: None,
-            user_id: None,
-            client_version: None,
-            attribution_callback: None,
-            bearer_resolver: None,
-            supports_backend_search: false,
-            compactions_remaining: None,
-            compaction_at_tokens: None,
-            doom_loop_recovery: None,
-            header_injector: None,
+            ..Default::default()
         }
     }
 
@@ -3208,5 +3237,261 @@ mod tests {
             event,
             rs::ResponseStreamEvent::ResponseOutputTextDelta(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn wire_identity_impersonated_suppresses_grok_headers_and_custom_ua_wins() {
+        let (headers_tx, headers_rx) = oneshot::channel();
+        let headers_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(headers_tx)));
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |req: axum::extract::Request| {
+                let headers_tx = headers_tx.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    let _ = headers_tx.lock().unwrap().take().unwrap().send(headers);
+                    axum::response::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"id":"chat","object":"chat.completion","created":0,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
+                        ))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut extra_headers = IndexMap::new();
+        extra_headers.insert(
+            "User-Agent".to_string(),
+            "claude-cli/0.2.149 (external, cli)".to_string(),
+        );
+
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            wire_identity: WireIdentity::Impersonated,
+            client_identifier: Some("should-be-suppressed".to_string()),
+            client_version: Some("1.0.0".to_string()),
+            deployment_id: Some("dep-123".to_string()),
+            user_id: Some("usr-123".to_string()),
+            extra_headers,
+            ..minimal_config()
+        })
+        .unwrap();
+
+        let request = ChatCompletionRequest {
+            model: Some("test-model".to_string()),
+            messages: vec![xai_grok_sampling_types::ChatRequestMessage::user("hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+            search_parameters: None,
+            response_format: None,
+            reasoning_effort: None,
+            x_grok_conv_id: Some("conv-123".to_string()),
+            x_grok_req_id: Some("req-123".to_string()),
+            x_grok_session_id: Some("sess-123".to_string()),
+            x_grok_turn_idx: Some("1".to_string()),
+            x_grok_agent_id: Some("agent-123".to_string()),
+            x_grok_deployment_id: Some("dep-123".to_string()),
+            x_grok_user_id: Some("usr-123".to_string()),
+            trace: None,
+        };
+
+        let _ = client.chat_completion(request).await.expect("request ok");
+        let headers = headers_rx.await.unwrap();
+        server.abort();
+
+        // Assert absence of all x-grok-* headers
+        for (name, _) in headers.iter() {
+            assert!(
+                !name.as_str().starts_with("x-grok-"),
+                "Header {} should not be sent on Impersonated wire",
+                name.as_str()
+            );
+        }
+        // Assert exact UA
+        assert_eq!(
+            headers.get(USER_AGENT).unwrap().to_str().unwrap(),
+            "claude-cli/0.2.149 (external, cli)"
+        );
+    }
+
+    #[tokio::test]
+    async fn wire_identity_grok_preserves_grok_headers() {
+        let (headers_tx, headers_rx) = oneshot::channel();
+        let headers_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(headers_tx)));
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |req: axum::extract::Request| {
+                let headers_tx = headers_tx.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    let _ = headers_tx.lock().unwrap().take().unwrap().send(headers);
+                    axum::response::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            r#"{"id":"chat","object":"chat.completion","created":0,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
+                        ))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            wire_identity: WireIdentity::Grok,
+            client_identifier: Some("grok-test-client".to_string()),
+            client_version: Some("1.0.0".to_string()),
+            deployment_id: Some("dep-123".to_string()),
+            user_id: Some("usr-123".to_string()),
+            ..minimal_config()
+        })
+        .unwrap();
+
+        let request = ChatCompletionRequest {
+            model: Some("test-model".to_string()),
+            messages: vec![xai_grok_sampling_types::ChatRequestMessage::user("hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            user: None,
+            tools: None,
+            tool_choice: None,
+            search_parameters: None,
+            response_format: None,
+            reasoning_effort: None,
+            x_grok_conv_id: Some("conv-123".to_string()),
+            x_grok_req_id: Some("req-123".to_string()),
+            x_grok_session_id: Some("sess-123".to_string()),
+            x_grok_turn_idx: None,
+            x_grok_agent_id: Some("agent-123".to_string()),
+            x_grok_deployment_id: None,
+            x_grok_user_id: None,
+            trace: None,
+        };
+
+        let _ = client.chat_completion(request).await.expect("request ok");
+        let headers = headers_rx.await.unwrap();
+        server.abort();
+
+        assert_eq!(
+            headers.get("x-grok-conv-id").unwrap().to_str().unwrap(),
+            "conv-123"
+        );
+        assert_eq!(
+            headers.get("x-grok-req-id").unwrap().to_str().unwrap(),
+            "req-123"
+        );
+        assert_eq!(
+            headers
+                .get("x-grok-client-identifier")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "grok-test-client"
+        );
+    }
+
+    /// The ChatGPT Codex backend answers `max_output_tokens` with
+    /// `400 Unsupported parameter`, so an impersonated wire must not send it.
+    /// The xAI wire honors the field and must keep it.
+    #[test]
+    fn impersonated_wire_drops_max_output_tokens_but_grok_keeps_it() {
+        let request_with_cap = || {
+            CreateResponseWrapper::new(rs::CreateResponse {
+                max_output_tokens: Some(128_000),
+                ..Default::default()
+            })
+        };
+
+        let impersonated = SamplingClient::new(SamplerConfig {
+            wire_identity: WireIdentity::Impersonated,
+            ..minimal_config()
+        })
+        .unwrap();
+        let mut request = request_with_cap();
+        impersonated.apply_response_defaults(&mut request).unwrap();
+        assert_eq!(
+            request.inner.max_output_tokens, None,
+            "impersonated wires must not send max_output_tokens"
+        );
+
+        let grok = SamplingClient::new(SamplerConfig {
+            wire_identity: WireIdentity::Grok,
+            ..minimal_config()
+        })
+        .unwrap();
+        let mut request = request_with_cap();
+        grok.apply_response_defaults(&mut request).unwrap();
+        assert_eq!(
+            request.inner.max_output_tokens,
+            Some(128_000),
+            "the xAI wire honors max_output_tokens and must keep it"
+        );
+    }
+
+    #[test]
+    fn system_prompt_as_instructions_moves_system_messages_to_instructions() {
+        let client = SamplingClient::new(SamplerConfig {
+            system_prompt_as_instructions: true,
+            ..minimal_config()
+        })
+        .unwrap();
+
+        let mut request = CreateResponseWrapper::new(rs::CreateResponse {
+            input: rs::InputParam::Items(vec![
+                rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                    r#type: rs::MessageType::Message,
+                    role: rs::Role::System,
+                    content: rs::EasyInputContent::Text("System prompt line 1".to_string()),
+                }),
+                rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                    r#type: rs::MessageType::Message,
+                    role: rs::Role::User,
+                    content: rs::EasyInputContent::Text("Hello".to_string()),
+                }),
+                rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                    r#type: rs::MessageType::Message,
+                    role: rs::Role::System,
+                    content: rs::EasyInputContent::Text("System prompt line 2".to_string()),
+                }),
+            ]),
+            ..Default::default()
+        });
+
+        client.apply_response_defaults(&mut request).unwrap();
+
+        assert_eq!(
+            request.inner.instructions.as_deref(),
+            Some("System prompt line 1\n\nSystem prompt line 2")
+        );
+
+        if let rs::InputParam::Items(items) = request.inner.input {
+            assert_eq!(items.len(), 1);
+            if let rs::InputItem::EasyMessage(msg) = &items[0] {
+                assert_eq!(msg.role, rs::Role::User);
+            } else {
+                panic!("Expected user easy message");
+            }
+        } else {
+            panic!("Expected items");
+        }
     }
 }

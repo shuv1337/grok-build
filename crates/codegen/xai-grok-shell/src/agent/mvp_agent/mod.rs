@@ -1259,8 +1259,23 @@ struct AuthRequestMeta {
     /// so a delayed cancel cannot tear down a successor login.
     #[serde(default)]
     request_seq: Option<u64>,
+    /// Which subscription provider to sign in to (`anthropic`,
+    /// `openai-codex`). Absent / unrecognized means the xAI flow, so older
+    /// pagers that never send it keep their exact behavior.
+    #[serde(default)]
+    provider: Option<String>,
 }
 impl AuthRequestMeta {
+    /// Resolved third-party provider, or `None` for the xAI flow. An unknown
+    /// or disabled id falls back to xAI rather than failing the request.
+    fn subscription_provider(&self) -> Option<crate::auth::SubscriptionProvider> {
+        self.provider
+            .as_deref()
+            .and_then(crate::auth::SubscriptionProvider::from_id)
+            .filter(|p| *p != crate::auth::SubscriptionProvider::Xai)
+            .filter(|p| p.is_enabled())
+    }
+
     /// `--oauth` → force loopback; otherwise default (loopback).
     fn login_override(&self) -> crate::auth::LoginTransportOverride {
         if self.use_oauth {
@@ -1852,6 +1867,8 @@ impl MvpAgent {
                     show_resolved_model,
                     gate,
                     subscription_tier,
+                    subscription_providers:
+                        crate::auth::SubscriptionProviderStatus::detect_all(),
                 };
                 serde_json::to_value(auth_meta)
                     .ok()

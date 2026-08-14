@@ -1163,6 +1163,31 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             format!("Couldn't load session usage: {error}"),
             nonce,
         ),
+        TaskResult::SubscriptionUsageComplete {
+            agent_id,
+            result,
+            nonce,
+        } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::UsageInfo { state }) =
+                    agent.active_modal.as_mut()
+                // Drop results from an earlier open of the modal.
+                && state.fetch_nonce == nonce
+            {
+                state.subscription_usage_loading = false;
+                match result {
+                    Ok(providers) => {
+                        state.subscription_usage = Some(providers);
+                        state.subscription_usage_error = None;
+                    }
+                    Err(error) => {
+                        state.subscription_usage = None;
+                        state.subscription_usage_error = Some(error);
+                    }
+                }
+            }
+            vec![]
+        }
         TaskResult::FeedbackComplete { .. } => vec![],
         TaskResult::FeedbackFailed { agent_id, error } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {

@@ -15,7 +15,6 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
 use futures_util::stream::{self, StreamExt};
-use indexmap::IndexMap;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -75,33 +74,10 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         base_url,
         model: model.into(),
         max_completion_tokens: Some(1024),
-        temperature: None,
-        top_p: None,
-        api_backend: ApiBackend::ChatCompletions,
-        auth_scheme: Default::default(),
-        extra_headers: IndexMap::new(),
-        extra_response_includes: Vec::new(),
-        query_params: IndexMap::new(),
-        env_http_headers: IndexMap::new(),
         context_window: 128_000,
-        force_http1: false,
-        // Keep retries minimal so tests don't take forever.
         max_retries: Some(2),
-        stream_tool_calls: false,
         idle_timeout_secs: Some(30),
-        reasoning_effort: None,
-        origin_client: None,
-        client_identifier: None,
-        deployment_id: None,
-        user_id: None,
-        client_version: None,
-        attribution_callback: None,
-        bearer_resolver: None,
-        supports_backend_search: false,
-        compactions_remaining: None,
-        compaction_at_tokens: None,
-        doom_loop_recovery: None,
-        header_injector: None,
+        ..Default::default()
     }
 }
 
@@ -1205,6 +1181,54 @@ async fn responses_doom_loop_signals_reach_completed_response() {
         "tail_repetition:4@response"
     );
     assert_eq!(response.assistant_text(), "an answer");
+}
+
+/// A backend whose terminal event omits `output` (ChatGPT Codex with
+/// `store: false`) must still yield the streamed assistant turn.
+///
+/// Before the fallback, this cost a full retry budget per prompt: every attempt
+/// answered correctly, was scored `EmptyResponse(NoVisibleContent)`, and was
+/// re-sent — so the user saw the same answer repeated once per attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_empty_terminal_output_uses_streamed_items_without_retrying() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let events = sse_events_to_axum(sse::responses_api_empty_terminal_output_events(
+                    "an answer",
+                    "test-model",
+                ));
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        responses_config(server.base_url(), None),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-empty-terminal"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("a streamed turn must not be scored empty");
+    assert_eq!(response.assistant_text(), "an answer");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "an answered turn must not be retried"
+    );
 }
 
 /// Acceptance spec for the recovery rung: a confident signal
