@@ -1,6 +1,16 @@
-//! Installed grok CLI version, lockstepped with shipping binaries.
+//! Installed CLI version and canonical product identity.
 
 use semver::Version;
+
+/// The product name shown to users, in one place so the fork boundary is a
+/// single edit rather than a scatter of literals.
+///
+/// This is *display* identity only. It deliberately does not rename the
+/// on-disk state (`~/.grok`), the `GROK_*` environment variables, the
+/// `x.ai/...` ACP methods, or the model-facing system prompt: those are
+/// compatibility surfaces shared with upstream, and renaming them would break
+/// existing installs and running integrations for no user-visible gain.
+pub const PRODUCT_NAME: &str = "ShuvGrok";
 
 pub const TEST_VERSION_ENV: &str = "GROK_TEST_VERSION";
 

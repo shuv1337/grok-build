@@ -1,0 +1,23 @@
+{
+    "name": "@shuv1337/shuvgrok-linux-x64",
+    "version": "1.0.3",
+    "description": "linux-x64 binary for @shuv1337/shuvgrok. Do not install directly; install @shuv1337/shuvgrok instead.",
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/shuv1337/grok-build.git"
+    },
+    "files": [
+        "bin/",
+        "THIRD_PARTY_NOTICES.md"
+    ],
+    "os": [
+        "linux"
+    ],
+    "cpu": [
+        "x64"
+    ],
+    "publishConfig": {
+        "access": "public"
+    }
+}

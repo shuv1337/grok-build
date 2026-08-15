@@ -2272,9 +2272,9 @@ mod tests {
         assert!(!args.no_alt_screen);
     }
     #[test]
-    fn cli_command_name_is_grok() {
+    fn cli_command_name_is_shuvgrok() {
         use clap::CommandFactory;
-        assert_eq!(PagerArgs::command().get_name(), "grok");
+        assert_eq!(PagerArgs::command().get_name(), "shuvgrok");
     }
     #[test]
     fn cli_help_output_header() {
@@ -2284,9 +2284,9 @@ mod tests {
         assert_eq!(
             first_5,
             vec![
-                "Grok Build TUI",
+                "ShuvGrok TUI",
                 "",
-                "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
+                "Usage: shuvgrok [OPTIONS] [PROMPT] [COMMAND]",
                 "",
                 "Arguments:",
             ]

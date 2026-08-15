@@ -10,7 +10,10 @@ use xai_grok_shell::env::GrokBuildEnvironment;
 use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
-const NPM_PACKAGE: &str = "@xai-official/grok";
+/// npm distribution for this fork. Renamed from `@xai-official/grok` so no
+/// code path can resolve, download, or install the upstream package over this
+/// build. (Self-update is separately disabled via `SELF_UPDATE_ENABLED`.)
+const NPM_PACKAGE: &str = "@shuv1337/shuvgrok";
 pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
 
 /// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching

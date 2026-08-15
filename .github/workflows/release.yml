@@ -1,0 +1,273 @@
+name: Release
+
+# Builds the six platform binaries, publishes the ShuvGrok npm packages
+# (@shuv1337/shuvgrok + @shuv1337/shuvgrok-<platform>-<arch>), cuts the GitHub
+# release, and announces it on Discord.
+#
+# Driven by scripts/release.mjs, which bumps the version in Cargo.toml +
+# the npm package.json files, commits, tags vX.Y.Z, and pushes.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g., v1.0.4)'
+        required: true
+        type: string
+      source_ref:
+        description: 'Source ref to build/publish (defaults to tag; use only for release recovery)'
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact: shuvgrok-darwin-arm64
+            bin: xai-grok-pager
+          - target: x86_64-apple-darwin
+            os: macos-14
+            artifact: shuvgrok-darwin-x64
+            bin: xai-grok-pager
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: shuvgrok-linux-x64
+            bin: xai-grok-pager
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: shuvgrok-linux-arm64
+            bin: xai-grok-pager
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: shuvgrok-win32-x64
+            bin: xai-grok-pager.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            artifact: shuvgrok-win32-arm64
+            bin: xai-grok-pager.exe
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          # build.rs shells out to `git rev-parse --short HEAD` for the commit
+          # stamp, so the checkout must keep its git metadata.
+          persist-credentials: false
+
+      - name: Install Rust target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "${{ matrix.target }}"
+
+      - name: Setup cross toolchain
+        if: matrix.cross
+        uses: taiki-e/setup-cross-toolchain-action@12b7ad4acfa95a1476779d6c06699b96ec1691f8 # v1.42.0
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          # build.rs reads GROK_VERSION. Without it the binary reports the
+          # crate version and behaves as a DEV BUILD — notably folder trust
+          # auto-trusts every directory. Never drop this.
+          export GROK_VERSION="${TAG#v}"
+          echo "Building ${{ matrix.target }} as GROK_VERSION=${GROK_VERSION}"
+          cargo build --release \
+            -p xai-grok-pager-bin \
+            --bin xai-grok-pager \
+            --target "${{ matrix.target }}"
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${{ matrix.bin }}"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-npm:
+    name: publish npm
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+      NPM_DIR: crates/codegen/xai-grok-pager/npm
+      # brotliCompress runs on the libuv thread pool; six targets compress in
+      # parallel only if the pool is at least six wide.
+      UV_THREADPOOL_SIZE: '8'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          meta_version="$(node -p "require('./${NPM_DIR}/shuvgrok/package.json').version")"
+          if [ "${version}" != "${meta_version}" ]; then
+            echo "Tag ${RELEASE_TAG} does not match @shuv1337/shuvgrok version ${meta_version}" >&2
+            exit 1
+          fi
+
+      - name: Assemble platform packages
+        shell: bash
+        env:
+          # Source paths for scripts/assemble-platform-packages.js. These env
+          # var names are part of the kept-compatibility surface; do not
+          # rename them to SHUVGROK_*.
+          GROK_DARWIN_ARM64: ${{ github.workspace }}/artifacts/shuvgrok-darwin-arm64/xai-grok-pager
+          GROK_DARWIN_X64: ${{ github.workspace }}/artifacts/shuvgrok-darwin-x64/xai-grok-pager
+          GROK_LINUX_X64: ${{ github.workspace }}/artifacts/shuvgrok-linux-x64/xai-grok-pager
+          GROK_LINUX_ARM64: ${{ github.workspace }}/artifacts/shuvgrok-linux-arm64/xai-grok-pager
+          GROK_WIN32_X64: ${{ github.workspace }}/artifacts/shuvgrok-win32-x64/xai-grok-pager.exe
+          GROK_WIN32_ARM64: ${{ github.workspace }}/artifacts/shuvgrok-win32-arm64/xai-grok-pager.exe
+        run: node scripts/assemble-platform-packages.js
+        working-directory: crates/codegen/xai-grok-pager/npm/shuvgrok
+
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@11.16.0 --ignore-scripts
+          npm --version
+
+      - name: Publish npm packages
+        run: node scripts/publish-npm.mjs
+
+  publish-github-release:
+    name: publish github release
+    runs-on: ubuntu-latest
+    needs:
+      - publish-npm
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # No CHANGELOG.md in this repo: let GitHub generate notes from commits.
+          # Prefer the resolved commit SHA; tags are invalid for target_commitish.
+          target_sha="$(git rev-parse HEAD)"
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --draft=false
+          else
+            gh release create "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --generate-notes \
+              --target "${target_sha}"
+          fi
+
+  notify-discord:
+    name: notify discord
+    runs-on: ubuntu-latest
+    needs:
+      - publish-github-release
+    permissions:
+      contents: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - id: release
+        name: Load release details
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          name="$(gh release view "$TAG" --repo "$GH_REPO" --json name --jq .name)"
+          url="$(gh release view "$TAG" --repo "$GH_REPO" --json url --jq .url)"
+          delimiter="release-notes-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "name=$name"
+            echo "url=$url"
+            echo "body<<$delimiter"
+            gh release view "$TAG" --repo "$GH_REPO" --json body --jq .body
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post release notes to Discord
+        uses: SethCohen/github-releases-to-discord@24d166886aee4646d448c8a389ff9e1ebcab3682 # v1.20.0
+        with:
+          webhook_url: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
+          release_name: ${{ steps.release.outputs.name }}
+          release_body: ${{ steps.release.outputs.body }}
+          release_html_url: ${{ steps.release.outputs.url }}
+          username: shuvgrok releases
+          reduce_headings: true

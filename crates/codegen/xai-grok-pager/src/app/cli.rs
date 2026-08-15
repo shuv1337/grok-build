@@ -337,7 +337,7 @@ impl AgentArgs {
                     None
                 }
                 Err(e) => {
-                    eprintln!("grok: --plugin-dir {}: {e}; skipping", p.display());
+                    eprintln!("shuvgrok: --plugin-dir {}: {e}; skipping", p.display());
                     None
                 }
             })
@@ -416,9 +416,9 @@ pub struct LeaderArgs {
 }
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "grok",
+    name = "shuvgrok",
     version = env!("VERSION_WITH_COMMIT"),
-    about = "Grok Build TUI",
+    about = "ShuvGrok TUI",
     disable_version_flag = true,
     next_display_order = None,
     help_template = "\
@@ -843,8 +843,8 @@ impl PagerArgs {
             .map(std::path::Path::new)
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .filter(|n| *n == "grok" || *n == "agent")
-            .unwrap_or("grok")
+            .filter(|n| *n == "shuvgrok" || *n == "agent")
+            .unwrap_or("shuvgrok")
             .to_owned();
         Self::parse_from(std::iter::once(bin_name).chain(std::env::args().skip(1)))
     }

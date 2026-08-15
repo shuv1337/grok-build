@@ -1,20 +1,16 @@
 <div align="center">
 
-<h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://media.x.ai/v1/website/spacexai-symbol-white-transparent-0c31957f.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png">
-    <img alt="SpaceXAI logo" src="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png" width="96">
-  </picture>
-  <br>
-  Grok Build (<code>grok</code>)
-</h1>
+<h1>ShuvGrok (<code>shuvgrok</code>)</h1>
 
-**Grok Build** is SpaceXAI's terminal-based AI coding agent. It runs as a
-full-screen TUI that understands your codebase, edits files, executes shell
-commands, searches the web, and manages long-running tasks — interactively,
-headlessly for scripting/CI, or embedded in editors via the Agent Client
-Protocol (ACP).
+**ShuvGrok** is a fork of [SpaceXAI's Grok Build](https://github.com/xai-org/grok-build)
+that adds first-class **Anthropic (Claude Pro/Max)** and **OpenAI Codex
+(ChatGPT Plus/Pro)** subscription providers, so one terminal client drives all
+three accounts.
+
+It runs as a full-screen TUI that understands your codebase, edits files,
+executes shell commands, searches the web, and manages long-running tasks —
+interactively, headlessly for scripting/CI, or embedded in editors via the
+Agent Client Protocol (ACP).
 
 [Installing the released binary](#installing-the-released-binary) ·
 [Building from source](#building-from-source) ·
@@ -24,15 +20,12 @@ Protocol (ACP).
 [Contributing](#contributing) ·
 [License](#license)
 
-![Grok Build TUI](https://media.x.ai/v1/website/universe-tui-screenshot-6f7a0837.png)
+This repository contains the Rust source for the `shuvgrok` CLI/TUI and its
+agent runtime. See [FORK.md](FORK.md) for what this fork changes, what it
+deliberately keeps compatible with upstream, and how to resync.
 
-**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)**
-
-This repository contains the Rust source for the `grok` CLI/TUI and its agent
-runtime. It is synced periodically from the SpaceXAI monorepo.
-
-A small `SOURCE_REV` file at the root records the full monorepo commit SHA
-for the version of the code present in this tree.
+A small `SOURCE_REV` file at the root records the upstream monorepo commit SHA
+for the code present in this tree.
 
 </div>
 
@@ -40,16 +33,20 @@ for the version of the code present in this tree.
 
 ## Installing the released binary
 
-Prebuilt binaries are published for macOS, Linux, and Windows:
+Prebuilt binaries are published to npm for macOS, Linux, and Windows:
 
 ```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
-grok --version
+npm install -g @shuv1337/shuvgrok
+shuvgrok --version
 ```
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
+The background update check and its startup banner are off in this fork, since
+it usually runs from a local build. Upgrade explicitly with
+`npm i -g @shuv1337/shuvgrok@latest`, or rebuild from source.
+
+See [releases](https://github.com/shuv1337/grok-build/releases) for what
+changed in each version, and [docs/RELEASING.md](docs/RELEASING.md) for how
+releases are cut.
 
 ## Building from source
 

@@ -100,6 +100,10 @@ members = [
 ]
 
 [workspace.package]
+# Product version for ShuvGrok. scripts/release.mjs rewrites this field and
+# keeps the npm packages under crates/codegen/xai-grok-pager/npm in lockstep
+# with it. Crates that carry the product version use `version.workspace = true`.
+version = "1.0.3"
 edition = "2024"
 license = "Apache-2.0"
 

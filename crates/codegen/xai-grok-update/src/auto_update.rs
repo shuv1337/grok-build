@@ -75,7 +75,7 @@ fn manual_install_cmd(channel: &str) -> String {
 /// Build a reinstall hint for a known installer type.
 fn reinstall_hint(installer: &str, channel: &str) -> String {
     match installer {
-        "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
+        "npm" => "Please reinstall via npm:\n  npm i -g @shuv1337/shuvgrok".to_string(),
         "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
     }
@@ -598,6 +598,9 @@ impl BackgroundUpdateCheck {
 /// TUI, the leader's hourly checker) already put the target version on disk,
 /// no download is started — only the restart hint is surfaced.
 pub async fn check_update_background(update_config: &UpdateConfig) -> BackgroundUpdateCheck {
+    if !crate::SELF_UPDATE_ENABLED {
+        return BackgroundUpdateCheck::none();
+    }
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
     };
@@ -2553,7 +2556,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
     warn_if_other_grok_processes_running();
 
     let version_arg = match target {
-        Some(ver) => format!("@xai-official/grok@{ver}"),
+        Some(ver) => format!("@shuv1337/shuvgrok@{ver}"),
         None => {
             // All current callers resolve the version via get_latest_version
             // (which applies max(stable, alpha) for the alpha channel) before
@@ -2564,7 +2567,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
                 "install_npm called without a resolved version, falling back to dist-tag"
             );
             format!(
-                "@xai-official/grok@{}",
+                "@shuv1337/shuvgrok@{}",
                 if channel == "alpha" {
                     "alpha"
                 } else {
