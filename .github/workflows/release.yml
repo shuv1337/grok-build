@@ -97,14 +97,50 @@ jobs:
           target: ${{ matrix.target }}
 
       # Proto codegen resolves protoc from $PROTOC, then bin/protoc, then PATH.
-      # bin/protoc is a DotSlash stub, so without DotSlash installed the build
-      # panics in xai-grok-tools-api's build script. Installing protoc directly
-      # satisfies the PATH branch; the version matches the one bin/protoc pins,
-      # so CI and a local DotSlash build generate from the same compiler.
+      # bin/protoc is a DotSlash stub, so with no DotSlash on the runner the
+      # build panics in xai-grok-tools-api's build script.
+      #
+      # This fetches the same protoc release bin/protoc pins (29.3) and sets
+      # $PROTOC, the first branch the build checks. Chosen over installing
+      # DotSlash because its stub is a `#!/usr/bin/env dotslash` shebang, which
+      # does not execute on Windows, and over an unpinned protoc because codegen
+      # should not drift between CI and a local DotSlash build.
+      #
+      # Selection is by RUNNER arch, not matrix.target: protoc runs on the host
+      # even when cross-compiling.
       - name: Install protoc
-        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
-        with:
-          tool: protoc@29.3
+        shell: bash
+        env:
+          PROTOC_VERSION: '29.3'
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)    asset="linux-x86_64" ;;
+            Linux-ARM64)  asset="linux-aarch_64" ;;
+            macOS-ARM64)  asset="osx-aarch_64" ;;
+            macOS-X64)    asset="osx-x86_64" ;;
+            Windows-X64)  asset="win64" ;;
+            *) echo "no pinned protoc for ${RUNNER_OS}-${RUNNER_ARCH}" >&2; exit 1 ;;
+          esac
+
+          url="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${asset}.zip"
+          dest="${RUNNER_TEMP}/protoc"
+          mkdir -p "${dest}"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/protoc.zip" "${url}"
+
+          # GNU tar cannot read zip; bsdtar (macOS/Windows) can, and unzip is
+          # present on the Linux images.
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -q "${RUNNER_TEMP}/protoc.zip" -d "${dest}"
+          else
+            tar -xf "${RUNNER_TEMP}/protoc.zip" -C "${dest}"
+          fi
+
+          exe="${dest}/bin/protoc"
+          [ "${RUNNER_OS}" = "Windows" ] && exe="${exe}.exe"
+          chmod +x "${exe}" || true
+          "${exe}" --version
+          echo "PROTOC=${exe}" >> "${GITHUB_ENV}"
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
