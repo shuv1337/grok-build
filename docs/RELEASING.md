@@ -25,65 +25,61 @@ commits `Release vX.Y.Z`, tags, and pushes. Pushing the tag is what starts CI.
    the tag's commit SHA.
 4. **notify-discord** — posts the release to the shared webhook.
 
-## One-time setup
+## One-time setup — done 2026-08-16
 
-Required before the first tag will produce a successful run.
+Recorded for the next fork or a registry reset; nothing here needs repeating.
 
-### 1. Publish each package once, manually
+All seven package names were reserved with `0.0.0` placeholders, because npm
+trusted publishing cannot perform a package's first publish — the settings that
+authorize CI do not exist until the package does. Placeholders were used rather
+than a real first release so the bootstrap did not require six cross-compiled
+binaries on one machine. CI supersedes them with the first real version.
 
-npm's trusted publishing is configured *on an existing package*, so it cannot
-bootstrap a name that has never been published. Until each of the seven names
-exists, CI fails at the OIDC exchange.
-
-Build all six targets, then:
+Trusted publishers were configured with the **`npm trust` CLI**, not the
+website:
 
 ```bash
-cd crates/codegen/xai-grok-pager/npm/shuvgrok
-GROK_DARWIN_ARM64=… GROK_DARWIN_X64=… GROK_LINUX_X64=… \
-GROK_LINUX_ARM64=… GROK_WIN32_X64=… GROK_WIN32_ARM64=… \
-  node scripts/assemble-platform-packages.js
-
-cd /home/shuv/repos/grok-build
-npm login                                  # account owning the @shuv1337 scope
-node scripts/publish-npm.mjs --no-provenance
+npm trust github "@shuv1337/<pkg>" \
+  --file release.yml --repo shuv1337/grok-build \
+  --env npm-publish --allow-publish -y
 ```
 
-Provenance requires OIDC, so it is unavailable for this local bootstrap run.
-Publish order matters and the script already enforces it.
+Verify any of them with `npm trust list @shuv1337/shuvgrok`.
 
-### 2. Configure a trusted publisher for all seven packages
+Also created: the `npm-publish` GitHub environment, and the
+`DISCORD_RELEASE_WEBHOOK_URL` repository secret.
 
-On npmjs.com, per package: **Settings → Trusted publishers → GitHub Actions**.
+### If you ever repeat this
 
-| Field | Value |
-|---|---|
-| Organization or user | `shuv1337` |
-| Repository | `grok-build` |
-| Workflow filename | `release.yml` |
-| Environment | `npm-publish` |
+The account has 2FA set to `auth-and-writes`, so all fourteen operations
+(7 publishes + 7 trust configs) are individually challenged. On the WebAuthn
+page, tick **"Do not challenge npm publish, npm trust operations from IP
+address … for the next 5 minutes"** before touching the key — that turns
+fourteen key touches into one. Stage every package directory first so the whole
+batch fits inside the window.
 
-All four must match exactly or the exchange is rejected.
+Two traps worth knowing:
 
-### 3. Create the `npm-publish` GitHub environment
+- `npm publish` opens the URL in your **default** browser. If your automation
+  drives a different browser, pass `--browser false` so npm only prints the URL
+  and polls; opening the same auth id twice invalidates it.
+- A brand-new package's packument 404s on `registry.npmjs.org` for a while
+  after a successful publish. `npm access get status <pkg>` is the reliable
+  existence check; `npm view` is not.
 
-**Settings → Environments → New environment → `npm-publish`**. The publish job
-declares it, and npm checks the environment name. Add a required reviewer here
-if you want publishes gated.
+## Validating without releasing
 
-### 4. Add the Discord secret
+The cross-compile matrix is the least-proven part of this pipeline. Exercise it
+without publishing anything:
 
-**Settings → Secrets and variables → Actions → `DISCORD_RELEASE_WEBHOOK_URL`**.
+```bash
+gh workflow run release.yml -f tag=v1.0.3 -f source_ref=main -f dry_run=true
+```
 
-The CI job fails on an empty webhook. The local path
-(`scripts/notify-discord-release.mjs`) instead skips silently when the variable
-is unset, so a local release without it still succeeds.
-
-### 5. Permissions and allowed actions
-
-- **Settings → Actions → General → Workflow permissions**: the release job
-  requests `contents: write`.
-- If the repo restricts actions, allow `SethCohen/github-releases-to-discord`,
-  `taiki-e/setup-cross-toolchain-action`, and `Swatinem/rust-cache`.
+`dry_run` builds all six targets, assembles and brotli-compresses the platform
+packages, and runs `publish-npm.mjs --dry-run`, then stops. No npm publish, no
+GitHub release, no Discord post. Pass a `tag` whose version matches the current
+`shuvgrok/package.json`, since the job asserts they agree.
 
 ## Not yet exercised
 

@@ -21,6 +21,11 @@ on:
         description: 'Source ref to build/publish (defaults to tag; use only for release recovery)'
         required: false
         type: string
+      dry_run:
+        description: 'Build and package only: skip npm publish, the GitHub release, and Discord'
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -193,13 +198,19 @@ jobs:
           npm --version
 
       - name: Publish npm packages
+        if: ${{ github.event.inputs.dry_run != 'true' }}
         run: node scripts/publish-npm.mjs
+
+      - name: Validate packaging only (dry run)
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: node scripts/publish-npm.mjs --dry-run
 
   publish-github-release:
     name: publish github release
     runs-on: ubuntu-latest
     needs:
       - publish-npm
+    if: ${{ github.event.inputs.dry_run != 'true' }}
     permissions:
       contents: write
     env:
@@ -239,6 +250,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - publish-github-release
+    if: ${{ github.event.inputs.dry_run != 'true' }}
     permissions:
       contents: read
     env:
