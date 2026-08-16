@@ -96,6 +96,16 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      # Proto codegen resolves protoc from $PROTOC, then bin/protoc, then PATH.
+      # bin/protoc is a DotSlash stub, so without DotSlash installed the build
+      # panics in xai-grok-tools-api's build script. Installing protoc directly
+      # satisfies the PATH branch; the version matches the one bin/protoc pins,
+      # so CI and a local DotSlash build generate from the same compiler.
+      - name: Install protoc
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+        with:
+          tool: protoc@29.3
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
         with:
