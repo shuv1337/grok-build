@@ -146,7 +146,21 @@ if (status.trim()) {
 }
 console.log("  Working directory clean\n");
 
-const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+// This repo is normally driven through jj, which keeps git HEAD *detached*.
+// `rev-parse --abbrev-ref HEAD` then returns the literal "HEAD", and
+// `git push origin HEAD` fails with "not a full refname". Fall back to the
+// remote's default branch and push an explicit refspec, which works the same
+// on a plain git checkout and under jj.
+const headRef = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+const branch =
+	headRef === "HEAD"
+		? git(["rev-parse", "--abbrev-ref", "origin/HEAD"])
+				.trim()
+				.replace(/^origin\//, "") || "main"
+		: headRef;
+if (headRef === "HEAD") {
+	console.log(`  Detached HEAD (jj); releasing onto ${branch}\n`);
+}
 
 // 2. Compute the next version.
 const currentVersion = readCargoVersion();
@@ -194,7 +208,9 @@ run(`git tag ${tag}`);
 console.log();
 
 console.log("Pushing to remote...");
-run(`git push origin ${branch}`);
+// Explicit refspec: HEAD is detached under jj, so `git push origin <branch>`
+// would look for a local branch of that name and find none.
+run(`git push origin HEAD:refs/heads/${branch}`);
 run(`git push origin ${tag}`);
 console.log();
 
