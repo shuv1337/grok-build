@@ -1,7 +1,7 @@
-# Handoff — next up: expired-provider refresh deadlock
+# Handoff — ShuvGrok fork state
 
-Updated 2026-08-16 (PDT). `main` and tag `v1.0.4` are at `5b66026`, pushed to
-`shuv1337/shuvgrok`.
+Updated 2026-08-17 (PDT). `main` is at `623e510`, pushed to `shuv1337/shuvgrok`.
+Latest published release is **v1.0.4**; v1.0.5 was tagged and is mid-flight.
 
 ## Where things stand
 
@@ -12,6 +12,9 @@ On top of upstream `eb267fef`:
 | `ae47de6` | Anthropic + OpenAI Codex subscription providers |
 | `c20f6bb` | ShuvGrok rebrand + release pipeline |
 | `5b66026` | Release v1.0.4 (plus the three CI fixes below) |
+| `63cf6bb` | `/login-claude` + `/login-codex`, docs say `shuvgrok` |
+| `25b6da2b` | Expired-provider refresh deadlock fixed |
+| `623e510` | Retry build-time release-asset downloads |
 
 Read the commit messages first — they carry the reasoning and are not
 duplicated here. Then [`FORK.md`](../FORK.md) for the identity/compatibility
@@ -49,44 +52,42 @@ still works — the `bin/shuvgrok` trampoline decompresses on first run — but 
 warning looks alarming. Worth deciding whether to document it or make the
 install script-free.
 
-## The task: expired provider credentials deadlock
+## Fixed since: the expired-provider deadlock
 
-A provider whose access token has expired disappears permanently and cannot
-recover on its own.
+An expired Claude or Codex access token used to hide that provider's models
+permanently — a hidden model cannot be selected, and only selecting one
+triggered a refresh. Both halves are fixed:
 
-Reproduced on 2026-08-16: the `anthropic::oauth` token expired 2026-08-15, and
-`shuvgrok models` now lists **zero** Claude models while Codex (unexpired)
-lists nine. Running a full session does not fix it.
+- Liveness no longer conflates a lapsed *access token* with a lapsed
+  *subscription*. A credential holding a refresh token stays live; one without
+  is still hidden, because that genuinely needs a new login.
+- The pre-turn hook gained an arm for subscription providers, whose credential
+  lives in its own `AuthManager` and was invisible to both the session refresh
+  and the JWT check.
+- `AuthRegistry::start_proactive_refresh_all` is gone. It was never called
+  while reading as though background refresh existed.
 
-The cycle:
+Verified against real credentials with forged expiry under an isolated
+`GROK_HOME`: 0 → 9 Claude and 0 → 8 Codex models, a successful turn on each,
+and the refreshed tokens persisted to disk.
 
-1. `LiveProviders::detect` (`auth/providers/mod.rs`) marks a provider live only
-   when `!is_expired(auth)`, so an expired credential hides every model it owns.
-2. A hidden model cannot be selected, so nothing ever exercises that provider's
-   refresher.
-3. `AuthRegistry::start_proactive_refresh_all` — which exists precisely to
-   refresh these in the background — **is never called from anywhere.** Confirm
-   with `grep -rn start_proactive_refresh_all crates/`.
+## Known-fragile: build-time downloads
 
-So the only escape is `shuvgrok login --provider anthropic`, even though a
-valid `refresh_token` is sitting in `auth.json`.
+`crates/codegen/xai-grok-tools/build.rs` downloads ripgrep and fd from GitHub
+releases **during the build**, per target. v1.0.5 failed on one of six targets
+with `HTTP 403 Forbidden` while the other five succeeded — GitHub rate-limits by
+source IP and CI runners share them. Those downloads now retry with backoff and
+a User-Agent, but the dependency itself remains: a release still needs the
+network, six times.
 
-Suggested shape of the fix, in order of value:
+If it bites again, the deterministic fix is to fetch both binaries once in a
+workflow step and export `GROK_TOOLS_BUNDLE_RG_PATH` / `GROK_TOOLS_BUNDLE_FD_PATH`,
+which the build script already honours. That was not done because the asset
+triple must match the *target*, not the runner, so the workflow would have to
+duplicate the script's asset-selection logic.
 
-- Treat *refreshable* as live: a credential with a `refresh_token` should keep
-  its models visible even when the access token has lapsed. Absence of a
-  credential and expiry of one are different states and should not render the
-  same.
-- Make a turn against a provider model refresh that provider's token first.
-  `WireValidBearerResolver` yields `None` once hard-expired, so the request
-  fails rather than refreshing; the custom-provider path already does this via
-  `refresh_provider_token_pre_turn` and subscription providers need an
-  equivalent.
-- Either wire up `start_proactive_refresh_all` or delete it. Dead code that
-  looks like it solves this problem is worse than no code.
-
-Do not verify this by waiting for a natural expiry — force it by editing
-`expires_at` in a copied `auth.json` and pointing `GROK_HOME` at it.
+Note the bundling only runs when `PROFILE=release`; a debug build silently skips
+it, so exercise this path with `cargo build --release -p xai-grok-tools`.
 
 ## What is and is not verified
 
