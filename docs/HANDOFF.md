@@ -1,16 +1,17 @@
-# Handoff — next up: first ShuvGrok release + npm setup
+# Handoff — next up: expired-provider refresh deadlock
 
-Written 2026-08-15 (PDT). Current `main` is `c20f6bb`, pushed to
-`shuv1337/grok-build`. Working copy is clean.
+Updated 2026-08-16 (PDT). `main` and tag `v1.0.4` are at `5b66026`, pushed to
+`shuv1337/grok-build`.
 
 ## Where things stand
 
-Two commits sit on top of upstream `eb267fef`:
+On top of upstream `eb267fef`:
 
 | Commit | What |
 |---|---|
 | `ae47de6` | Anthropic + OpenAI Codex subscription providers |
 | `c20f6bb` | ShuvGrok rebrand + release pipeline |
+| `5b66026` | Release v1.0.4 (plus the three CI fixes below) |
 
 Read the commit messages first — they carry the reasoning and are not
 duplicated here. Then [`FORK.md`](../FORK.md) for the identity/compatibility
@@ -24,35 +25,68 @@ Rebuild: `cargo build --release -p xai-grok-pager-bin --bin xai-grok-pager`
 (`build.rs` only re-stamps the commit when it or `.git/HEAD` changes; `touch`
 it if the hash looks stale). Tests need `RUST_MIN_STACK=8388608`.
 
-## The task
+## Done since this doc was written
 
-Cut the first real release. It cannot work yet — see the blocker below.
+**v1.0.4 is released.** npm bootstrap, trusted publishing, and the full
+pipeline all work; see `docs/RELEASING.md` for the recorded setup. Verified by
+installing `@shuv1337/shuvgrok@1.0.4` from npm into a clean prefix: it reports
+`shuvgrok 1.0.4 (5b66026)`, decompresses and runs, and lists provider models.
+All seven packages carry SLSA provenance.
 
-### Blocker: npm trusted publishing cannot bootstrap a package
+Three things broke on the way and are fixed in `main`:
 
-Verified 2026-08-15:
+1. `protoc` was absent in CI (`bin/protoc` is a DotSlash stub) — now fetched at
+   the pinned 29.3 and exported as `$PROTOC`.
+2. Proto codegen used `/dev/stdout` and `/dev/null`, which do not exist on
+   Windows — both Windows targets failed. Now writes real files under `OUT_DIR`.
+   **All six targets build, Windows included.**
+3. `release.mjs` ran `git push origin HEAD`, which fails because jj keeps git
+   HEAD detached. Now pushes an explicit refspec.
 
-- The `@shuv1337` scope exists (`@shuv1337/shuvpi-coding-agent` is published).
-- None of the seven ShuvGrok package names exist yet.
-- This machine is **not** logged into npm (`npm whoami` → 401).
+Note npm 12 blocks postinstall scripts by default, so a plain
+`npm i -g @shuv1337/shuvgrok` prints a warning and skips `postinstall`. It
+still works — the `bin/shuvgrok` trampoline decompresses on first run — but the
+warning looks alarming. Worth deciding whether to document it or make the
+install script-free.
 
-npm's trusted-publisher config is set *on an existing package*, so CI's OIDC
-exchange fails until each name has been published once. The one-time manual
-bootstrap and all the out-of-repo console steps are written up in
-[`RELEASING.md` § One-time setup](RELEASING.md#one-time-setup). Follow that
-rather than improvising; the ordering matters (six platform packages before the
-meta package, because the meta pins them by exact version).
+## The task: expired provider credentials deadlock
 
-`scripts/publish-npm.mjs` takes `--dry-run` and `--no-provenance`. Provenance
-needs CI's OIDC token, so the local bootstrap run must pass `--no-provenance`.
+A provider whose access token has expired disappears permanently and cannot
+recover on its own.
 
-### Then
+Reproduced on 2026-08-16: the `anthropic::oauth` token expired 2026-08-15, and
+`shuvgrok models` now lists **zero** Claude models while Codex (unexpired)
+lists nine. Running a full session does not fix it.
 
-```bash
-node scripts/release.mjs patch     # bumps Cargo.toml + all 7 manifests, tags, pushes
-```
+The cycle:
 
-The tag push starts `.github/workflows/release.yml`.
+1. `LiveProviders::detect` (`auth/providers/mod.rs`) marks a provider live only
+   when `!is_expired(auth)`, so an expired credential hides every model it owns.
+2. A hidden model cannot be selected, so nothing ever exercises that provider's
+   refresher.
+3. `AuthRegistry::start_proactive_refresh_all` — which exists precisely to
+   refresh these in the background — **is never called from anywhere.** Confirm
+   with `grep -rn start_proactive_refresh_all crates/`.
+
+So the only escape is `shuvgrok login --provider anthropic`, even though a
+valid `refresh_token` is sitting in `auth.json`.
+
+Suggested shape of the fix, in order of value:
+
+- Treat *refreshable* as live: a credential with a `refresh_token` should keep
+  its models visible even when the access token has lapsed. Absence of a
+  credential and expiry of one are different states and should not render the
+  same.
+- Make a turn against a provider model refresh that provider's token first.
+  `WireValidBearerResolver` yields `None` once hard-expired, so the request
+  fails rather than refreshing; the custom-provider path already does this via
+  `refresh_provider_token_pre_turn` and subscription providers need an
+  equivalent.
+- Either wire up `start_proactive_refresh_all` or delete it. Dead code that
+  looks like it solves this problem is worse than no code.
+
+Do not verify this by waiting for a natural expiry — force it by editing
+`expires_at` in a copied `auth.json` and pointing `GROK_HOME` at it.
 
 ## What is and is not verified
 
