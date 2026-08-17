@@ -1082,6 +1082,108 @@ test('decompresses brotli into the canonical dir without duplicating into node_m
     }
 });
 
+// ─── Trampoline resolution (bin/shuvgrok) ──────────────────────────────
+//
+// These run the trampoline as a real process. The suite previously only
+// covered postinstall.js helpers, which is exactly how the trampoline shipped
+// a bug where `npm i pkg@new` kept running the OLD binary: it exec'd whatever
+// $GROK_HOME/bin/shuvgrok pointed at, without checking the version. npm now
+// blocks lifecycle scripts by default, so the postinstall that repoints that
+// symlink often never runs.
+
+const { execFileSync } = require('child_process');
+
+// A stand-in for the native binary: a script that identifies itself.
+function stubBinary(marker) {
+    return `#!/bin/sh\necho "${marker}"\n`;
+}
+
+// Build a throwaway install tree and return a runner for the trampoline.
+function makeTrampolineFixture(dir, version) {
+    const scope = path.join(dir, 'node_modules', '@shuv1337');
+    const mainPkg = path.join(scope, 'shuvgrok');
+    const platformPkg = path.join(scope, `shuvgrok-${process.platform}-${process.arch}`);
+    fs.mkdirSync(path.join(mainPkg, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(platformPkg, 'bin'), { recursive: true });
+
+    fs.writeFileSync(path.join(mainPkg, 'package.json'), JSON.stringify({ name: '@shuv1337/shuvgrok', version }));
+    fs.writeFileSync(path.join(platformPkg, 'package.json'), JSON.stringify({ name: path.basename(platformPkg), version }));
+    fs.writeFileSync(
+        path.join(platformPkg, 'bin', 'shuvgrok.br'),
+        zlib.brotliCompressSync(Buffer.from(stubBinary('PACKAGED')))
+    );
+
+    const trampoline = path.join(mainPkg, 'bin', 'shuvgrok');
+    fs.copyFileSync(path.join(__dirname, '..', 'bin', 'shuvgrok'), trampoline);
+
+    const grokHome = path.join(dir, 'grokhome');
+    return {
+        grokHome,
+        canonical: path.join(grokHome, 'bin', 'shuvgrok'),
+        run: () =>
+            execFileSync(process.execPath, [trampoline], {
+                env: { ...process.env, GROK_HOME: grokHome },
+                encoding: 'utf8',
+            }).trim(),
+    };
+}
+
+function seedCanonical(grokHome, versionedName, marker) {
+    const binDir = path.join(grokHome, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const versioned = path.join(binDir, versionedName);
+    fs.writeFileSync(versioned, stubBinary(marker));
+    fs.chmodSync(versioned, 0o755);
+    fs.symlinkSync(versionedName, path.join(binDir, 'shuvgrok'));
+}
+
+// The regression itself.
+test('a canonical symlink from an older version is not exec\'d after upgrade', () => {
+    const dir = makeTmpDir();
+    try {
+        const fx = makeTrampolineFixture(dir, '9.9.9');
+        seedCanonical(fx.grokHome, 'shuvgrok-1.0.0', 'STALE');
+        assert.strictEqual(fx.run(), 'PACKAGED', 'ran the stale binary instead of the installed one');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+// An `npx pkg@older` must not repoint the symlink a global install relies on.
+test('a canonical symlink owned by another version is left in place', () => {
+    const dir = makeTmpDir();
+    try {
+        const fx = makeTrampolineFixture(dir, '9.9.9');
+        seedCanonical(fx.grokHome, 'shuvgrok-1.0.0', 'STALE');
+        fx.run();
+        assert.strictEqual(path.basename(fs.readlinkSync(fx.canonical)), 'shuvgrok-1.0.0');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('a canonical symlink at the packaged version is reused, not rebuilt', () => {
+    const dir = makeTmpDir();
+    try {
+        const fx = makeTrampolineFixture(dir, '9.9.9');
+        seedCanonical(fx.grokHome, 'shuvgrok-9.9.9', 'CANONICAL');
+        assert.strictEqual(fx.run(), 'CANONICAL');
+    } finally {
+        cleanup(dir);
+    }
+});
+
+test('a missing canonical symlink is bootstrapped and pointed at this version', () => {
+    const dir = makeTmpDir();
+    try {
+        const fx = makeTrampolineFixture(dir, '9.9.9');
+        assert.strictEqual(fx.run(), 'PACKAGED');
+        assert.strictEqual(path.basename(fs.readlinkSync(fx.canonical)), 'shuvgrok-9.9.9');
+    } finally {
+        cleanup(dir);
+    }
+});
+
 // ─── Summary ───────────────────────────────────────────────────────────
 
 console.log(`\n${passed} passed, ${failed} failed`);

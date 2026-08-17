@@ -90,15 +90,53 @@ function swapCanonical(versionedName, versionedPath) {
     }
 }
 
-function bootstrapCanonical(brPath, rawPath, version) {
+// Materialize $GROK_HOME/bin/shuvgrok-<version> without touching the shared
+// canonical symlink. Returns its path, or null if it could not be written.
+function ensureVersioned(brPath, rawPath, version) {
     try {
         fs.mkdirSync(CANONICAL_DIR, { recursive: true });
-        const versionedName = `shuvgrok-${version}${EXE}`;
-        const versionedPath = path.join(CANONICAL_DIR, versionedName);
-        if (!fs.existsSync(versionedPath) && !writeVendorBinary(brPath, rawPath, versionedPath)) {
-            return null;
+        const versionedPath = path.join(CANONICAL_DIR, `shuvgrok-${version}${EXE}`);
+        if (fs.existsSync(versionedPath)) return versionedPath;
+        return writeVendorBinary(brPath, rawPath, versionedPath) ? versionedPath : null;
+    } catch {
+        return null;
+    }
+}
+
+// Does the canonical symlink already point at the version in THIS package?
+//
+// Without this check the trampoline exec'd whatever the canonical name pointed
+// at, so upgrading silently kept running the old binary: `npm i pkg@1.0.5`
+// then `shuvgrok --version` printed 1.0.4. postinstall.js is what repoints the
+// symlink, and npm now blocks lifecycle scripts by default, which turns this
+// fallback into the ordinary path rather than a rare one.
+function canonicalIsVersion(version) {
+    // No version to compare against: keep the old permissive behaviour rather
+    // than churn a symlink on a guess.
+    if (!version) return true;
+    const versionedName = `shuvgrok-${version}${EXE}`;
+    try {
+        return path.basename(fs.readlinkSync(CANONICAL_PATH)) === versionedName;
+    } catch {
+        // Windows keeps a copy rather than a symlink, so compare against the
+        // versioned file instead of resolving a link.
+        try {
+            const versionedPath = path.join(CANONICAL_DIR, versionedName);
+            return (
+                fs.existsSync(versionedPath) &&
+                fs.statSync(versionedPath).size === fs.statSync(CANONICAL_PATH).size
+            );
+        } catch {
+            return false;
         }
-        swapCanonical(versionedName, versionedPath);
+    }
+}
+
+function bootstrapCanonical(brPath, rawPath, version) {
+    try {
+        const versionedPath = ensureVersioned(brPath, rawPath, version);
+        if (!versionedPath) return null;
+        swapCanonical(path.basename(versionedPath), versionedPath);
         // null on a broken wire-up so the caller falls back to in-place launch.
         return fs.existsSync(CANONICAL_PATH) ? CANONICAL_PATH : null;
     } catch {
@@ -107,7 +145,10 @@ function bootstrapCanonical(brPath, rawPath, version) {
 }
 
 function resolveBinary() {
-    if (fs.existsSync(CANONICAL_PATH)) return CANONICAL_PATH;
+    const localVersion = readLocalVersion();
+    if (fs.existsSync(CANONICAL_PATH) && canonicalIsVersion(localVersion)) {
+        return CANONICAL_PATH;
+    }
 
     const platformDir = resolvePlatformPackageDir();
     if (!platformDir) {
@@ -120,13 +161,21 @@ function resolveBinary() {
 
     const rawPath = path.join(platformDir, 'bin', BIN_NAME);
     const brPath = rawPath + '.br';
-    const version = readLocalVersion();
+    const version = localVersion;
 
     // Prefer the canonical layout, decompressing straight into CANONICAL_DIR so
     // no second uncompressed copy lands under node_modules.
     if (version) {
-        const bootstrapped = bootstrapCanonical(brPath, rawPath, version);
-        if (bootstrapped) return bootstrapped;
+        // A canonical symlink owned by a different version is left alone: an
+        // `npx pkg@older` must not downgrade the binary a global install
+        // points at. Run our own version directly instead.
+        if (fs.existsSync(CANONICAL_PATH)) {
+            const versionedPath = ensureVersioned(brPath, rawPath, version);
+            if (versionedPath) return versionedPath;
+        } else {
+            const bootstrapped = bootstrapCanonical(brPath, rawPath, version);
+            if (bootstrapped) return bootstrapped;
+        }
     }
 
     // Fallback (unresolved version or unwritable home): materialize in place.
