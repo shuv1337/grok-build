@@ -5,7 +5,7 @@
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/shuv1337/grok-build.git"
+        "url": "git+https://github.com/shuv1337/shuvgrok.git"
     },
     "files": [
         "bin/",

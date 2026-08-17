@@ -101,6 +101,24 @@ if (!meta) {
 	}
 }
 
+// The repository slug is load-bearing beyond documentation: npm trusted
+// publishing authorizes releases by matching the OIDC claim against the
+// repository configured per package. Renaming the GitHub repo without updating
+// those bindings makes the next release fail at the token exchange, so keep the
+// manifests and the trust configs describing the same repo.
+const CANONICAL_REPO = "shuv1337/shuvgrok";
+for (const dir of ["shuvgrok", ...PLATFORMS.map((p) => `shuvgrok-${p}`)]) {
+	const rel = `${NPM_DIR}/${dir}/package.json`;
+	const body = read(rel);
+	if (!body) continue; // absence is already reported below
+	const url = (JSON.parse(body).repository || {}).url || "";
+	if (!url.includes(CANONICAL_REPO)) {
+		failures.push(
+			`${rel}: repository is ${url || "unset"}, expected ${CANONICAL_REPO} — npm trusted publishing matches on this slug`,
+		);
+	}
+}
+
 for (const platform of PLATFORMS) {
 	const rel = `${NPM_DIR}/shuvgrok-${platform}/package.json`;
 	const body = read(rel);

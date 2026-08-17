@@ -44,7 +44,7 @@ The background update check and its startup banner are off in this fork, since
 it usually runs from a local build. Upgrade explicitly with
 `npm i -g @shuv1337/shuvgrok@latest`, or rebuild from source.
 
-See [releases](https://github.com/shuv1337/grok-build/releases) for what
+See [releases](https://github.com/shuv1337/shuvgrok/releases) for what
 changed in each version, and [docs/RELEASING.md](docs/RELEASING.md) for how
 releases are cut.
 

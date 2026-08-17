@@ -11,7 +11,7 @@
 
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_REPO = "shuv1337/grok-build";
+const DEFAULT_REPO = "shuv1337/shuvgrok";
 const DEFAULT_PACKAGE = "@shuv1337/shuvgrok";
 
 export function normalizeVersion(version) {

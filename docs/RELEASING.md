@@ -40,7 +40,7 @@ website:
 
 ```bash
 npm trust github "@shuv1337/<pkg>" \
-  --file release.yml --repo shuv1337/grok-build \
+  --file release.yml --repo shuv1337/shuvgrok \
   --env npm-publish --allow-publish -y
 ```
 

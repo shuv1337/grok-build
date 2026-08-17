@@ -4,7 +4,7 @@ ShuvGrok is a fork of [xai-org/grok-build](https://github.com/xai-org/grok-build
 Grok in your terminal, with a fast, flicker-free CLI built for plans, subagents,
 and parallel work.
 
-**[Source](https://github.com/shuv1337/grok-build)** | **[Upstream docs](https://docs.x.ai/build/overview)**
+**[Source](https://github.com/shuv1337/shuvgrok)** | **[Upstream docs](https://docs.x.ai/build/overview)**
 
 ## Install
 
@@ -59,4 +59,4 @@ method names. Only the distribution name and the installed command differ.
 ## Feedback
 
 Open an issue at
-[shuv1337/grok-build](https://github.com/shuv1337/grok-build/issues).
+[shuv1337/shuvgrok](https://github.com/shuv1337/shuvgrok/issues).

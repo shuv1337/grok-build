@@ -7,7 +7,7 @@ are preserved here.
 | | |
 |---|---|
 | Upstream | `xai-org/grok-build` |
-| Fork | `shuv1337/grok-build` |
+| Fork | `shuv1337/shuvgrok` |
 | Forked at | `eb267feff13129e568df38fb6fdf0ceb65f735d6` ("Synced from monorepo") |
 | Product name | ShuvGrok |
 | Command | `shuvgrok` |

@@ -1,7 +1,7 @@
 # Handoff — next up: expired-provider refresh deadlock
 
 Updated 2026-08-16 (PDT). `main` and tag `v1.0.4` are at `5b66026`, pushed to
-`shuv1337/grok-build`.
+`shuv1337/shuvgrok`.
 
 ## Where things stand
 
