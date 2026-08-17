@@ -67,6 +67,33 @@ Two traps worth knowing:
   after a successful publish. `npm access get status <pkg>` is the reliable
   existence check; `npm view` is not.
 
+### If you rename the GitHub repo
+
+npm authorizes a release by matching the OIDC claim against the repository
+recorded on each package, and GitHub's redirect does **not** cover that claim.
+A rename therefore breaks publishing silently: git keeps working, the diff
+looks fine, and the next release fails at the token exchange.
+
+Re-bind all seven. npm permits one trust config per package, so replacing means
+revoke then create:
+
+```bash
+for n in shuvgrok-darwin-arm64 shuvgrok-darwin-x64 shuvgrok-linux-arm64 \
+         shuvgrok-linux-x64 shuvgrok-win32-arm64 shuvgrok-win32-x64 shuvgrok; do
+  pkg="@shuv1337/$n"
+  id=$(npm trust list "$pkg" | awk '/^id:/{print $2}')
+  [ -n "$id" ] && npm trust revoke "$pkg" --id="$id"
+  npm trust github "$pkg" --file release.yml --repo shuv1337/shuvgrok \
+    --env npm-publish --allow-publish -y
+done
+```
+
+That is 14 challenged operations, so tick the 5-minute cooldown box before
+touching the key. Verify with `npm trust list` per package rather than trusting
+the loop's output. `scripts/check-fork-boundary.mjs` asserts the manifests agree
+with the canonical slug, but it cannot see the registry-side config — that
+check is manual.
+
 ## Validating without releasing
 
 The cross-compile matrix is the least-proven part of this pipeline. Exercise it
