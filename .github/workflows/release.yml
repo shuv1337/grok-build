@@ -147,10 +147,25 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # The tools build script embeds ripgrep (and fd) into the binary,
+      # downloading each from GitHub releases per target. Six unauthenticated
+      # fetches per release is how v1.0.5 died on a 403. Cached verified
+      # tarballs make the steady state need no network at all; the key covers
+      # the pinned versions, which live in build.rs.
+      - name: Cache bundled tool assets
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/grok-tool-assets
+          key: tool-assets-${{ matrix.target }}-${{ hashFiles('crates/codegen/xai-grok-tools/build.rs') }}
+
       - name: Build
         shell: bash
         env:
           TAG: ${{ env.RELEASE_TAG }}
+          GROK_TOOLS_ASSET_CACHE: ${{ runner.temp }}/grok-tool-assets
+          # Raises the GitHub rate-limit ceiling on a cache miss. Dropped by
+          # reqwest on the cross-host redirect to the asset CDN.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # build.rs reads GROK_VERSION. Without it the binary reports the

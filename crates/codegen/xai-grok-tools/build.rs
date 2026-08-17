@@ -15,6 +15,32 @@ const FD_VER: &str = "10.4.2";
 const FD_VER_MACOS_X64: &str = "10.3.0";
 
 /// Pinned SHA-256 of each `(version, triple)` fd release tarball we embed.
+/// Upstream-published SHA-256 of each ripgrep release tarball, read from the
+/// `.tar.gz.sha256` file beside each asset. ripgrep was previously downloaded
+/// and embedded with no verification at all, unlike fd.
+const RG_TARBALL_SHA256: &[(&str, &str, &str)] = &[
+    (
+        "15.0.0",
+        "x86_64-unknown-linux-musl",
+        "253ad0fd5fef0d64cba56c70dccdacc1916d4ed70ad057cc525fcdb0c3bbd2a7",
+    ),
+    (
+        "15.0.0",
+        "aarch64-unknown-linux-gnu",
+        "15f8cc2fab12d88491c54d49f38589922a9d6a7353c29b0a0856727bcdf80754",
+    ),
+    (
+        "15.0.0",
+        "aarch64-apple-darwin",
+        "98bb2e61e7277ba0ea72d2ae2592497fd8d2940934a16b122448d302a6637e3b",
+    ),
+    (
+        "15.0.0",
+        "x86_64-apple-darwin",
+        "44128c733d127ddbda461e01225a68b5f9997cfe7635242a797f645ca674a71a",
+    ),
+];
+
 const FD_TARBALL_SHA256: &[(&str, &str, &str)] = &[
     (
         "10.4.2",
@@ -118,26 +144,18 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
         "https://github.com/sharkdp/fd/releases/download/v{ver}/fd-v{ver}-{asset_triple}.tar.gz"
     );
 
-    let bytes: Vec<u8> = download_release_asset(&url, "fd", "GROK_TOOLS_BUNDLE_FD_PATH")?;
-
-    // Verify the tarball against the pinned per-asset hash before unpacking.
     let expected_sha = FD_TARBALL_SHA256
         .iter()
         .find(|(v, t, _)| *v == ver && *t == asset_triple)
         .map(|(_, _, sha)| *sha)
         .ok_or_else(|| format!("No pinned SHA-256 for fd {ver} {asset_triple}"))?;
-    let actual_sha = {
-        use sha2::Digest as _;
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        hex_encode(&hasher.finalize())
-    };
-    if actual_sha != expected_sha {
-        return Err(format!(
-            "SHA-256 mismatch for {url}:\n  expected {expected_sha}\n  actual   {actual_sha}"
-        )
-        .into());
-    }
+    let bytes: Vec<u8> = fetch_verified_asset(
+        &url,
+        &format!("fd-v{ver}-{asset_triple}.tar.gz"),
+        expected_sha,
+        "fd",
+        "GROK_TOOLS_BUNDLE_FD_PATH",
+    )?;
 
     let gz = flate2::read::GzDecoder::new(&bytes[..]);
     let mut ar = tar::Archive::new(gz);
@@ -167,32 +185,109 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Fetch a release asset, retrying the failures GitHub hands out under load.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    hex_encode(&hasher.finalize())
+}
+
+/// Where verified tarballs are kept between builds.
 ///
-/// A single unauthenticated GET fails a whole release build at random: observed
-/// as `HTTP 403 Forbidden` on exactly one of six cross-compile targets, while
-/// the other five downloaded the same asset fine. GitHub rate-limits by source
-/// IP, and CI runners share those.
+/// `OUT_DIR` is the wrong place: it is per-target, and `cargo clean` wipes it,
+/// so every clean build re-downloaded every asset. This directory survives
+/// both, so the network is a cold-start cost rather than a per-build one.
+/// Override with `GROK_TOOLS_ASSET_CACHE`; CI caches this path directly.
+fn asset_cache_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("GROK_TOOLS_ASSET_CACHE") {
+        return Some(PathBuf::from(dir));
+    }
+    env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))
+        .map(|home| home.join("xai-grok-tools-assets"))
+}
+
+/// Fetch a release asset, verified against a pinned hash and cached on disk.
 ///
-/// Retries 403/429/5xx with exponential backoff and sends a User-Agent, which
-/// GitHub treats less harshly than a client sending none. A 404 is a genuine
-/// mistake (wrong version or asset name) and fails immediately.
-fn download_release_asset(
+/// Two problems this solves, which cost a release each:
+///
+/// 1. **The network was a hard per-build dependency.** A single unauthenticated
+///    GET failed a whole release at random — observed as `HTTP 403 Forbidden`
+///    on exactly one of six cross-compile targets while the other five fetched
+///    the same asset fine. GitHub rate-limits by source IP and CI runners share
+///    them, so the odds worsen the more targets build in parallel.
+/// 2. **Nothing verified ripgrep.** `fd` was hash-pinned; `rg` was not, so a
+///    substituted tarball would have been embedded into shipped binaries.
+///
+/// The cache is only ever read after its contents hash to `expected_sha`, so a
+/// corrupted or tampered entry is re-fetched rather than trusted. Downloads
+/// retry 403/408/429/5xx with backoff, send a User-Agent (GitHub is harsher on
+/// clients sending none), and use `GITHUB_TOKEN` when present, which raises the
+/// rate limit ceiling substantially. A 404 means a wrong version or asset name
+/// and fails immediately instead of retrying.
+fn fetch_verified_asset(
     url: &str,
+    cache_key: &str,
+    expected_sha: &str,
     what: &str,
     offline_env: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     const ATTEMPTS: u32 = 4;
 
-    let client = reqwest::blocking::Client::builder()
+    let cached = asset_cache_dir().map(|dir| dir.join(cache_key));
+    if let Some(path) = cached.as_ref()
+        && let Ok(bytes) = fs::read(path)
+    {
+        if sha256_hex(&bytes) == expected_sha {
+            return Ok(bytes);
+        }
+        println!("cargo:warning=cached {what} failed verification; re-downloading");
+        let _ = fs::remove_file(path);
+    }
+
+    let mut builder = reqwest::blocking::Client::builder()
         .user_agent("shuvgrok-build")
-        .timeout(std::time::Duration::from_secs(180))
-        .build()?;
+        .timeout(std::time::Duration::from_secs(180));
+    // Authenticated requests get a far higher rate limit. reqwest drops the
+    // Authorization header on the cross-host redirect to the asset CDN, so this
+    // never leaks the token off github.com.
+    let token = env::var("GITHUB_TOKEN")
+        .or_else(|_| env::var("GH_TOKEN"))
+        .ok();
+    if let Some(ref t) = token
+        && !t.trim().is_empty()
+    {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))?;
+        value.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, value);
+        builder = builder.default_headers(headers);
+    }
+    let client = builder.build()?;
 
     let mut last = String::from("no attempt made");
     for attempt in 1..=ATTEMPTS {
         match client.get(url).send() {
-            Ok(resp) if resp.status().is_success() => return Ok(resp.bytes()?.to_vec()),
+            Ok(resp) if resp.status().is_success() => {
+                let bytes = resp.bytes()?.to_vec();
+                let actual = sha256_hex(&bytes);
+                if actual != expected_sha {
+                    return Err(format!(
+                        "SHA-256 mismatch for {url}:\n  expected {expected_sha}\n  actual   {actual}"
+                    )
+                    .into());
+                }
+                // Cache only verified bytes. A failure to cache is not a build
+                // failure — it just costs the next build a download.
+                if let Some(path) = cached.as_ref()
+                    && let Some(parent) = path.parent()
+                    && fs::create_dir_all(parent).is_ok()
+                {
+                    let _ = fs::write(path, &bytes);
+                }
+                return Ok(bytes);
+            }
             Ok(resp) => {
                 let status = resp.status();
                 last = format!("HTTP {status}");
@@ -345,7 +440,18 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         t = asset_triple
     );
 
-    let bytes: Vec<u8> = download_release_asset(&url, "ripgrep", "GROK_TOOLS_BUNDLE_RG_PATH")?;
+    let expected_sha = RG_TARBALL_SHA256
+        .iter()
+        .find(|(v, t, _)| *v == RG_VER && *t == asset_triple)
+        .map(|(_, _, sha)| *sha)
+        .ok_or_else(|| format!("No pinned SHA-256 for ripgrep {RG_VER} {asset_triple}"))?;
+    let bytes: Vec<u8> = fetch_verified_asset(
+        &url,
+        &format!("ripgrep-{RG_VER}-{asset_triple}.tar.gz"),
+        expected_sha,
+        "ripgrep",
+        "GROK_TOOLS_BUNDLE_RG_PATH",
+    )?;
 
     let gz = flate2::read::GzDecoder::new(&bytes[..]);
     let mut ar = tar::Archive::new(gz);
