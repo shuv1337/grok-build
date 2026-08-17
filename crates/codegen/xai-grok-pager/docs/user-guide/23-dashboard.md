@@ -14,7 +14,7 @@ disk), or the workflows run UI (`/workflows`).
 
 ## Opening the dashboard
 
-- **`grok dashboard`** — launch the TUI into the dashboard.
+- **`shuvgrok dashboard`** — launch the TUI into the dashboard.
 - **`/dashboard`** (aliases **`/agents-dashboard`**, **`/sessions`**) — open
   from inside a session.
 - **`Ctrl+\`** — same view as the slash command.
@@ -27,7 +27,7 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ## What you see
 
 ```
- Grok Build · Dashboard — 4 agents · 2 awaiting
+ ShuvGrok · Dashboard — 4 agents · 2 awaiting
 ▌● reviewer · audit token flow    Awaiting your input            2m
  ● implementer · fix login bug    Running: cargo test           12m
  ⋅ refactor · feat/login          Responding…                   24m
@@ -51,7 +51,7 @@ the 8 freshest, plus any active within the last hour. The rest fold into a
 `→` (or click) to expand, `←` to re-fold. The Idle header always shows the
 true total. Folding is suspended while a filter or search is active.
 
-State icons match other session lists in Grok Build:
+State icons match other session lists in ShuvGrok:
 
 - `⋅`/`:`/`⸬`/`⁙` — animated spinner for **Working**
 - `●` — filled circle for **Needs input**, **Completed**, **Failed**,

@@ -6,12 +6,12 @@ Grok connects to custom model endpoints for alternative providers, self-hosted m
 
 ## Default Models
 
-By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-4.5`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session.
+By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-4.5`. Default models require no configuration. Authenticate with `shuvgrok login` or an API key, then start a session.
 
 List all available models:
 
 ```bash
-grok models
+shuvgrok models
 ```
 
 ---
@@ -23,8 +23,8 @@ like any other model — no `[model.*]` block required. They become selectable
 once you sign in with your consumer subscription:
 
 ```bash
-grok login --provider anthropic       # Claude Pro / Max
-grok login --provider openai-codex    # ChatGPT Plus / Pro
+shuvgrok login --provider anthropic       # Claude Pro / Max
+shuvgrok login --provider openai-codex    # ChatGPT Plus / Pro
 ```
 
 These entries carry their own endpoint, wire protocol (Anthropic Messages /
@@ -43,7 +43,7 @@ for the login flows, refresh behavior, and billing caveat.
 ### CLI Flag
 
 ```bash
-grok -p "Hello" -m grok-build
+shuvgrok -p "Hello" -m grok-build
 ```
 
 ### Slash Command
@@ -119,7 +119,7 @@ Grok resolves the API key in this order:
 
 1. The `api_key` field in the model config
 2. The environment variable(s) named by `env_key` — a single string or an array of names. The first set, non-empty value wins (for example `env_key = ["ANTHROPIC_AUTH_TOKEN", "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding)
-3. Your signed-in session token (from `grok login`), for a model with no `api_key`/`env_key` of its own
+3. Your signed-in session token (from `shuvgrok login`), for a model with no `api_key`/`env_key` of its own
 4. The `XAI_API_KEY` environment variable (global fallback; Grok also accepts `GROK_CODE_XAI_API_KEY` for backward compatibility)
 
 ### Context Window
@@ -309,7 +309,7 @@ Point Grok at a custom OpenAI-compatible `/v1/models` endpoint instead of the de
 ```bash
 export GROK_MODELS_BASE_URL="https://api.acme.com/v1"
 export XAI_API_KEY="xai-..."
-grok
+shuvgrok
 ```
 
 ### Config File Alternative
@@ -327,7 +327,7 @@ When you use `[endpoints]` with partial model overrides, Grok inherits the `base
 
 ### Auth Behavior
 
-When you set `models_base_url`, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. You do not need `grok login` -- the API key is enough.
+When you set `models_base_url`, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. You do not need `shuvgrok login` -- the API key is enough.
 
 ---
 
@@ -363,13 +363,13 @@ supports_backend_search = true
 
 ```bash
 # List available models (including custom)
-grok models
+shuvgrok models
 
 # Use in the TUI via slash command
 /model my-model
 
 # Use in headless mode
-grok -p "Hello" -m my-model
+shuvgrok -p "Hello" -m my-model
 
 # Set as default in config.toml:
 [models]
@@ -397,7 +397,7 @@ default = "company-grok"
 [model.company-grok]
 model = "grok-build"
 base_url = "https://grok-proxy.acme.com/"
-name = "Grok Build Latest (Proxy)"
+name = "ShuvGrok Latest (Proxy)"
 context_window = 128000
 
 [features]
@@ -412,7 +412,7 @@ telemetry = false
 
 ```bash
 # List available models
-grok models
+shuvgrok models
 
 # Check config.toml for typos in [model.*] sections
 ```
@@ -429,7 +429,7 @@ curl -s https://api.example.com/v1/models \
 ### Debug Logging
 
 ```bash
-RUST_LOG=debug GROK_LOG_FILE=/tmp/grok.log grok
+RUST_LOG=debug GROK_LOG_FILE=/tmp/grok.log shuvgrok
 tail -f /tmp/grok.log
 ```
 

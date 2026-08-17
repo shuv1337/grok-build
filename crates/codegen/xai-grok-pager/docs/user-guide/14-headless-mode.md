@@ -9,7 +9,7 @@ Headless mode runs Grok non-interactively from the command line. It accepts a si
 Passing a prompt non-interactively triggers headless mode. The most common way is the `-p` flag (short for `--single`); `--prompt-json` and `--prompt-file` also trigger it:
 
 ```bash
-grok -p "Your prompt here"
+shuvgrok -p "Your prompt here"
 ```
 
 Grok processes the prompt, runs any necessary tools, and prints the result to stdout. The process exits when the response is complete.
@@ -54,13 +54,13 @@ Tool names are internal tool IDs (e.g. the shell tool is `run_terminal_cmd`, not
 
 ```bash
 # Only allow read-only tools
-grok -p "Explain this codebase" --tools "read_file,grep,list_dir"
+shuvgrok -p "Explain this codebase" --tools "read_file,grep,list_dir"
 
 # Remove web access and file editing
-grok -p "Review this code" --disallowed-tools "web_search,web_fetch,search_replace"
+shuvgrok -p "Review this code" --disallowed-tools "web_search,web_fetch,search_replace"
 
 # Remove shell access
-grok -p "Review this code" --disallowed-tools "run_terminal_cmd"
+shuvgrok -p "Review this code" --disallowed-tools "run_terminal_cmd"
 ```
 
 `--disallowed-tools` also supports special `Agent` entries to control subagent spawning:
@@ -73,10 +73,10 @@ grok -p "Review this code" --disallowed-tools "run_terminal_cmd"
 
 ```bash
 # Prevent the agent from spawning any subagents
-grok -p "Fix this bug" --disallowed-tools "Agent"
+shuvgrok -p "Fix this bug" --disallowed-tools "Agent"
 
 # Block only the explore subagent
-grok -p "Refactor this module" --disallowed-tools "Agent(explore)"
+shuvgrok -p "Refactor this module" --disallowed-tools "Agent(explore)"
 ```
 
 `--tools` preserves the selected agent profile's injection policy: stock profiles inject enabled optional tools before applying the allowlist, while curated profiles remain strict. The final toolset retains requested tools plus always-on MCP meta-tools. When both flags are present, `--disallowed-tools` wins.
@@ -101,13 +101,13 @@ For path rules (`Read`, `Edit`, `Write`, `Grep`), `*` is a single-level wildcard
 
 ```bash
 # Deny shell commands matching "rm*"
-grok -p "Clean up this project" --deny "Bash(rm*)"
+shuvgrok -p "Clean up this project" --deny "Bash(rm*)"
 
 # Allow npm commands, deny sudo
-grok -p "Set up the project" --allow "Bash(npm*)" --deny "Bash(sudo*)"
+shuvgrok -p "Set up the project" --allow "Bash(npm*)" --deny "Bash(sudo*)"
 
 # Allow all bash commands (auto-approve without prompting)
-grok -p "Build the project" --allow "Bash"
+shuvgrok -p "Build the project" --allow "Bash"
 ```
 
 `--allow` and `--deny` can be repeated. Deny rules take precedence over allow rules.
@@ -292,13 +292,13 @@ Grok omits the schema's pure-placeholder `init` fields it has no data for, rathe
 
 The assistant frame's `stop_sequence` is wired end-to-end. It carries the provider's matched stop sequence when the model stopped on a configured one (`stop_reason: "stop_sequence"`), and is `null` on every other stop reason and backend. In `--include-partial-messages` framing, the matched sequence rides both the flushed `assistant` frame and the partial `message_delta.stop_sequence`, so a partial rebuild matches the frame. Only the partial `message_start.stop_sequence` stays `null`, because the matched sequence is not known at message open.
 
-The emitted error subtypes are `error_max_turns`, `error_during_execution`, and `error_max_structured_output_retries`. The schema's `error_max_budget_usd` subtype is never emitted, because grok has no budget feature.
+The emitted error subtypes are `error_max_turns`, `error_during_execution`, and `error_max_structured_output_retries`. The schema's `error_max_budget_usd` subtype is never emitted, because shuvgrok has no budget feature.
 
 `result.usage` reports the Messages `message.usage` shape with the three token buckets disjoint: `input_tokens` (uncached), `cache_read_input_tokens`, and `cache_creation_input_tokens`. Grok derives these from the turn's aggregate ledger, reshaped into those buckets. Subagent cache creation is included in `cache_creation_input_tokens`. The aggregate ledger tracks it as its own bucket, so it is no longer folded into `input_tokens`.
 
-`result.usage` always emits numeric buckets, even when data is missing. This happens when the turn's usage ledger is incomplete (the same condition that surfaces `usage_is_incomplete` in the `json` format), or when no aggregate ledger reached the reducer at all. Any bucket grok cannot account for falls back to `0`, because the Messages API schema has no marker for incomplete or absent usage. The reducer logs a warning to stderr in both cases. Read an all-zero `usage` here as "unknown", not "free".
+`result.usage` always emits numeric buckets, even when data is missing. This happens when the turn's usage ledger is incomplete (the same condition that surfaces `usage_is_incomplete` in the `json` format), or when no aggregate ledger reached the reducer at all. Any bucket shuvgrok cannot account for falls back to `0`, because the Messages API schema has no marker for incomplete or absent usage. The reducer logs a warning to stderr in both cases. Read an all-zero `usage` here as "unknown", not "free".
 
-The nested `server_tool_use` counter is populated. `web_search_requests` is the number of *successful* backend web searches emitted this run. Failed searches and non-search `WebSearch` actions such as open_page are excluded, matching the Messages API, which does not bill errored searches. A failed backend search still emits a `web_search_tool_result` in the error shape (`content.type: "web_search_tool_result_error"`), but is not counted. Its `error_code` is a fixed `"unavailable"` placeholder, not a code forwarded from the backend. There is no `web_fetch_requests` key, because grok has no server-side `web_fetch`, so the placeholder is omitted.
+The nested `server_tool_use` counter is populated. `web_search_requests` is the number of *successful* backend web searches emitted this run. Failed searches and non-search `WebSearch` actions such as open_page are excluded, matching the Messages API, which does not bill errored searches. A failed backend search still emits a `web_search_tool_result` in the error shape (`content.type: "web_search_tool_result_error"`), but is not counted. Its `error_code` is a fixed `"unavailable"` placeholder, not a code forwarded from the backend. There is no `web_fetch_requests` key, because shuvgrok has no server-side `web_fetch`, so the placeholder is omitted.
 
 Backend web search is inline. It folds into the same `assistant` frame as the surrounding text. The frame carries a `server_tool_use` block (`name: "web_search"`, `input.query`) immediately followed by a `web_search_tool_result` block. That result block's `tool_use_id` matches the `server_tool_use.id`, and its `content` is a `web_search_result` hit array of `{type, url, title}`. This matches the Messages API's inline server-tool shape rather than splitting the response across frames.
 
@@ -320,15 +320,15 @@ Fidelity caveats apply to a few fields.
 
 `num_turns` and `total_cost_usd` are authoritative when known. When they are not, `num_turns` falls back to the count of completed model responses this turn, and `total_cost_usd` falls back to `0`. A completed but contentless response emits no `assistant` line, yet still counts as a turn. Spend is never overreported.
 
-`modelUsage` carries the per-model token and cost fields grok tracks, plus `webSearchRequests` attributed to the active model. The reducer tracks a single global web-search count rather than per-model, so the whole count lands on the current or last model and other rows stay `0`. A per-model `modelUsage.*.costUSD` is `0` when that model's cost is unknown or withheld. This is the same fail-closed-to-zero behavior as the top-level `total_cost_usd`. The `json` format omits cost floats entirely when partial, but this stream keeps the field present and `0`. `contextWindow` is the current model's real total context window (the same value grok uses for auto-compaction), and it appears only on the current model's row. Other rows omit it, and so does the current row when the window is unknown. `maxOutputTokens` has no grok catalog, so that key is omitted entirely. `modelUsage` is `{}` when no per-model breakdown is available.
+`modelUsage` carries the per-model token and cost fields shuvgrok tracks, plus `webSearchRequests` attributed to the active model. The reducer tracks a single global web-search count rather than per-model, so the whole count lands on the current or last model and other rows stay `0`. A per-model `modelUsage.*.costUSD` is `0` when that model's cost is unknown or withheld. This is the same fail-closed-to-zero behavior as the top-level `total_cost_usd`. The `json` format omits cost floats entirely when partial, but this stream keeps the field present and `0`. `contextWindow` is the current model's real total context window (the same value shuvgrok uses for auto-compaction), and it appears only on the current model's row. Other rows omit it, and so does the current row when the window is unknown. `maxOutputTokens` has no shuvgrok catalog, so that key is omitted entirely. `modelUsage` is `{}` when no per-model breakdown is available.
 
-Like `streaming-json`, this stream is read only. Tool approvals and other bidirectional flows use the ACP interface (`grok agent`).
+Like `streaming-json`, this stream is read only. Tool approvals and other bidirectional flows use the ACP interface (`shuvgrok agent`).
 
 ---
 
 ## Session Management in Headless Mode
 
-By default, each `grok -p` invocation creates a fresh session. To maintain context across calls, use session flags.
+By default, each `shuvgrok -p` invocation creates a fresh session. To maintain context across calls, use session flags.
 
 ### Named Sessions (`-s`)
 
@@ -336,13 +336,13 @@ To carry context across headless calls, use `-r/--resume` or `-c/--continue`. Us
 
 ```bash
 # Start a headless session and capture its ID
-grok -p "Review the changes in this PR" --output-format json | jq -r '.sessionId'
+shuvgrok -p "Review the changes in this PR" --output-format json | jq -r '.sessionId'
 
 # Continue in the same session
-grok -p "Now check for security issues" --resume "<id>"
+shuvgrok -p "Now check for security issues" --resume "<id>"
 
 # Optional: create with a client-chosen UUID (must not already exist)
-grok -p "hello" --session-id "$(uuidgen | tr '[:upper:]' '[:lower:]')" --output-format json
+shuvgrok -p "hello" --session-id "$(uuidgen | tr '[:upper:]' '[:lower:]')" --output-format json
 ```
 
 > **Note:** `-s/--session-id` creates a new session only (valid UUID; errors if already in use). Use `-r` to resume.
@@ -353,11 +353,11 @@ The `-r/--resume` flag resumes a specific session by ID, or by title for the cur
 
 ```bash
 # Get the session ID from a previous JSON response
-grok -p "Remember: the secret number is 42" --output-format json
+shuvgrok -p "Remember: the secret number is 42" --output-format json
 # Output includes "sessionId": "abc123"
 
 # Resume that exact session
-grok -p "What's the secret number?" --resume abc123
+shuvgrok -p "What's the secret number?" --resume abc123
 ```
 
 ### Continue (`-c`)
@@ -365,7 +365,7 @@ grok -p "What's the secret number?" --resume abc123
 The `-c/--continue` flag continues the most recent session in the current working directory:
 
 ```bash
-grok -p "Continue where we left off" -c
+shuvgrok -p "Continue where we left off" -c
 ```
 
 ### Extracting Session IDs
@@ -373,7 +373,7 @@ grok -p "Continue where we left off" -c
 Use `--output-format json` and parse the `sessionId` field:
 
 ```bash
-grok -p "Hello" --output-format json | jq -r '.sessionId'
+shuvgrok -p "Hello" --output-format json | jq -r '.sessionId'
 ```
 
 ---
@@ -386,10 +386,10 @@ Headless mode works naturally with Unix pipes and redirection.
 
 ```bash
 # Pipe output to a file
-grok -p "Generate a README" > README.md
+shuvgrok -p "Generate a README" > README.md
 
 # Parse JSON output with jq
-grok -p "List files" --output-format json | jq -r '.text'
+shuvgrok -p "List files" --output-format json | jq -r '.text'
 ```
 
 ### Standard Input
@@ -398,12 +398,12 @@ Headless mode does not read piped stdin into the prompt. Pass external content t
 
 ```bash
 # Include git diff as context via command substitution
-grok -p "Write a concise commit message for these changes:
+shuvgrok -p "Write a concise commit message for these changes:
 
 $(git diff --staged)"
 
 # Or read the prompt from a file
-grok --prompt-file ./prompt.txt
+shuvgrok --prompt-file ./prompt.txt
 ```
 
 ---
@@ -413,14 +413,14 @@ grok --prompt-file ./prompt.txt
 ### Automated Code Review
 
 ```bash
-grok -p "Review changes for bugs and security issues." \
+shuvgrok -p "Review changes for bugs and security issues." \
   --output-format json --yolo | jq -r '.text' > review.md
 ```
 
 ### Pre-Commit Hook
 
 ```bash
-grok -p "Review staged changes for obvious bugs. Reply OK if fine, or list issues." \
+shuvgrok -p "Review staged changes for obvious bugs. Reply OK if fine, or list issues." \
   --yolo --output-format json | jq -r '.text' | grep -q "^OK" || exit 1
 ```
 
@@ -428,7 +428,7 @@ grok -p "Review staged changes for obvious bugs. Reply OK if fine, or list issue
 
 ```bash
 for file in src/*.js; do
-  grok -p "Migrate $file from CommonJS to ES modules." --yolo
+  shuvgrok -p "Migrate $file from CommonJS to ES modules." --yolo
 done
 ```
 
@@ -453,7 +453,7 @@ class GrokChat:
         self.env = {**os.environ}
 
     def _build_cmd(self, prompt, model, stream):
-        return ["grok", "-p", prompt, "-m", model, "--cwd", self.cwd,
+        return ["shuvgrok", "-p", prompt, "-m", model, "--cwd", self.cwd,
                 "--output-format", "streaming-json" if stream else "json",
                 "--yolo"]
 
@@ -508,7 +508,7 @@ asyncio.run(main())
 #!/bin/bash
 # Run a code review and exit with failure if issues are found
 
-RESULT=$(grok -p "Review this PR for bugs. Output JSON with 'issues' array." \
+RESULT=$(shuvgrok -p "Review this PR for bugs. Output JSON with 'issues' array." \
   --output-format json --yolo | jq -r '.text')
 
 ISSUE_COUNT=$(echo "$RESULT" | jq '.issues | length' 2>/dev/null || echo "0")
@@ -529,8 +529,8 @@ echo "No issues found"
 `--always-approve` (alias `--yolo`, same as `--permission-mode bypassPermissions`) runs tool calls without interactive permission prompts. Deny rules, hooks, and admin locks still apply (see [Permissions and safety](22-permissions-and-safety.md#permission-modes)).
 
 ```bash
-grok -p "Format all files" --always-approve
-grok -p "Run the tests and fix any failures" --cwd ~/projects/my-app --always-approve
+shuvgrok -p "Format all files" --always-approve
+shuvgrok -p "Run the tests and fix any failures" --cwd ~/projects/my-app --always-approve
 ```
 
 For agent servers and SDKs, see [Agent mode](15-agent-mode.md#automation-and-sdks).
@@ -551,7 +551,7 @@ For CI environments without browser access, set `XAI_API_KEY` with an API key fr
 
 ```bash
 export XAI_API_KEY="xai-..."
-grok -p "Run the test suite" --yolo
+shuvgrok -p "Run the test suite" --yolo
 ```
 
 ---
@@ -572,9 +572,9 @@ grok -p "Run the test suite" --yolo
 For headless use, authenticate with one of:
 
 - **`XAI_API_KEY`**: simplest for CI. See [Environment Variables](#environment-variables-for-headless) above.
-- **`grok login --device-auth`** (or `--device-code`): no browser needed on the target machine.
+- **`shuvgrok login --device-auth`** (or `--device-code`): no browser needed on the target machine.
   See [Authentication > Device Code Flow](02-authentication.md#device-code-flow).
-- **`grok login`**: browser-based OAuth2 on machines with a GUI.
+- **`shuvgrok login`**: browser-based OAuth2 on machines with a GUI.
 
 If you've previously logged in, cached credentials are used automatically.
 
@@ -584,8 +584,8 @@ If you've previously logged in, cached credentials are used automatically.
 
 - Headless mode starts a **fresh session by default**. Use `-r/--resume` or `-c/--continue` to maintain context across calls.
 - The `--output-format json` response always includes a `sessionId` you can use with `--resume` for follow-up calls.
-- Combine `--yolo` with `--rules` to set guardrails: `grok -p "..." --yolo --rules "Never delete files"`.
-- For debugging, raise the log level and capture stderr: `RUST_LOG=debug grok -p "..." 2> debug.log`.
+- Combine `--yolo` with `--rules` to set guardrails: `shuvgrok -p "..." --yolo --rules "Never delete files"`.
+- For debugging, raise the log level and capture stderr: `RUST_LOG=debug shuvgrok -p "..." 2> debug.log`.
 
 ---
 
@@ -631,7 +631,7 @@ For containers or CI, mount `~/.grok` read-only:
 ```bash
 export XAI_API_KEY="xai-..."
 export GROK_DISABLE_AUTOUPDATER=1
-grok -p "..." --no-auto-update
+shuvgrok -p "..." --no-auto-update
 ```
 
 ---
@@ -681,6 +681,6 @@ On SIGINT/SIGTERM:
 - Session state saved up to the last completed tool call
 - File modifications by tools are **not rolled back**
 - Exit code is **130** for SIGINT (`128 + 2`) and **143** for SIGTERM (`128 + 15`); CI pipelines can distinguish these from a normal error (exit code `1`)
-- Resume: `grok -p "continue" --resume "<id>"` or `grok -p "continue" --continue`
+- Resume: `shuvgrok -p "continue" --resume "<id>"` or `shuvgrok -p "continue" --continue`
 
 See [Session Management in Headless Mode](#session-management-in-headless-mode) for details on named sessions and the `-s`/`-r`/`-c` flags.

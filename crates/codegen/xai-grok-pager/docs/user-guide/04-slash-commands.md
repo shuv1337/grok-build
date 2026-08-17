@@ -113,7 +113,7 @@ Switch models. Accepts a model ID or display name (case-insensitive), and for re
 
 ```
 /model grok-build
-/model Grok Build
+/model ShuvGrok
 /model Reasoning X high
 ```
 
@@ -156,7 +156,7 @@ Toggle vim-style scrollback keys (`j`/`k`, `h`/`l`, `g`/`G`, `y`/`Y`, and so on)
 
 ### `/minimal` and `/fullscreen`
 
-Reopen the current session in the other render mode. `/minimal` (offered while you're in fullscreen) switches to the experimental scrollback-native mode; `/fullscreen` (offered while you're in minimal; alias `/full`) switches back to standard fullscreen mode. Both relaunch the pager on the same conversation for this session only — they don't touch `config.toml`, and the relaunch banner reminds you how to switch back. The `--minimal` / `--fullscreen` CLI flags are session-scoped the same way. To make plain `grok` open in a given mode by default, use `/settings` → **Default screen mode** or set `[ui] screen_mode`.
+Reopen the current session in the other render mode. `/minimal` (offered while you're in fullscreen) switches to the experimental scrollback-native mode; `/fullscreen` (offered while you're in minimal; alias `/full`) switches back to standard fullscreen mode. Both relaunch the pager on the same conversation for this session only — they don't touch `config.toml`, and the relaunch banner reminds you how to switch back. The `--minimal` / `--fullscreen` CLI flags are session-scoped the same way. To make plain `shuvgrok` open in a given mode by default, use `/settings` → **Default screen mode** or set `[ui] screen_mode`.
 
 A handful of commands only work in one of the two modes, because the surface they drive doesn't exist in the other: `/find`, `/jump`, `/timeline`, `/theme`, `/tutorial`, `/workflows`, and `/dashboard` are fullscreen-only, while `/expand` and `/edit-prompt` are minimal-only. Those are hidden from the command menu and the palette in the mode they can't run in. If you type one out anyway, Grok says why — and points you at whichever is actually useful. When the other mode is the only way to get it, that's the mode switch: `/theme isn't available in minimal mode (minimal renders with your terminal's own palette). Run /fullscreen to switch this session.` When this mode already does the job another way, it names that instead: `/expand isn't available in fullscreen mode — press Tab to focus the scrollback, then → on the block.` Everything else works in both. Note that `--no-alt-screen` still counts as fullscreen here, so it keeps the fullscreen-only commands.
 
@@ -399,7 +399,19 @@ Create, edit, and delete personas. A subagent can apply a persona to shape how i
 
 ### `/login`
 
-Log in or re-authenticate without leaving the session.
+Log in or re-authenticate without leaving the session. Lists every provider —
+Grok, Claude, and ChatGPT — so you can pick one. `/login xai` re-authenticates
+Grok directly.
+
+### `/login-claude`
+
+Sign in with a **Claude Pro/Max** subscription, so Claude models can be
+selected from `/model`. Aliases: `/claude`, `/anthropic`, `/login-anthropic`.
+
+### `/login-codex`
+
+Sign in with a **ChatGPT Plus/Pro** subscription, so GPT models can be selected
+from `/model`. Aliases: `/codex`, `/chatgpt`, `/gpt`, `/login-chatgpt`.
 
 ### `/logout`
 

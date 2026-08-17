@@ -9,7 +9,7 @@ Grok supports several authentication methods, including interactive browser logi
 On first launch, Grok opens your browser to authenticate with grok.com:
 
 ```bash
-grok
+shuvgrok
 ```
 
 Grok stores credentials in `~/.grok/auth.json` and reuses them across sessions. Grok refreshes access tokens automatically in the background. When a token can't be refreshed, Grok prompts you to sign in again. Credentials without a server-provided expiry fall back to a 30-day lifetime.
@@ -27,10 +27,10 @@ Tokens in `~/.grok/auth.json` (and MCP OAuth tokens in `~/.grok/mcp_credentials.
 To switch accounts or resolve an authentication problem, run:
 
 ```bash
-grok login
+shuvgrok login
 ```
 
-Running `grok login` starts the sign-in flow again, replacing your cached session. By default, it opens your browser and signs in through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
+Running `shuvgrok login` starts the sign-in flow again, replacing your cached session. By default, it opens your browser and signs in through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
 
 | Flag | Description |
 |------|-------------|
@@ -38,7 +38,7 @@ Running `grok login` starts the sign-in flow again, replacing your cached sessio
 | `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
 | `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. Supported for `xai` and `openai-codex`. |
 
-To sign out, run `grok logout`. Pass `--provider <id>` to sign out of a single
+To sign out, run `shuvgrok logout`. Pass `--provider <id>` to sign out of a single
 provider; without it, the xAI session is cleared.
 
 ---
@@ -53,9 +53,20 @@ never disturbs the others.
 
 ### Sign in
 
+From inside the TUI, one command per provider:
+
+```
+/login-claude     # Claude Pro / Max     (aliases: /claude, /anthropic)
+/login-codex      # ChatGPT Plus / Pro   (aliases: /codex, /chatgpt, /gpt)
+```
+
+`/login` on its own lists all three providers to choose from.
+
+From the shell:
+
 ```bash
-grok login --provider anthropic       # Claude Pro / Max
-grok login --provider openai-codex    # ChatGPT Plus / Pro
+shuvgrok login --provider anthropic       # Claude Pro / Max
+shuvgrok login --provider openai-codex    # ChatGPT Plus / Pro
 ```
 
 Both open your browser and complete an OAuth 2.0 PKCE flow. If the browser
@@ -66,7 +77,7 @@ against your paste and takes whichever arrives first.
 ChatGPT also supports a fully headless device flow:
 
 ```bash
-grok login --provider openai-codex --device-auth
+shuvgrok login --provider openai-codex --device-auth
 ```
 
 Inside the TUI, `/login` presents the same provider picker.
@@ -80,7 +91,7 @@ Inside the TUI, `/login` presents the same provider picker.
 ### Selecting a model
 
 After signing in, that provider's models appear in `/model` and in
-`grok models`. Until you sign in they remain visible but unselectable, with a
+`shuvgrok models`. Until you sign in they remain visible but unselectable, with a
 hint naming the login command. Bundled catalogs cover the current Claude
 (Opus/Sonnet/Haiku) and GPT-5.x Codex families.
 
@@ -89,14 +100,14 @@ hint naming the login command. Bundled catalogs cover the current Claude
 Access tokens refresh transparently in the background and on a mid-request 401.
 Anthropic rotates the **refresh token** on every refresh; Grok persists the
 rotated token and the new access token in the same locked write, so concurrent
-`grok` processes cannot lose a rotation. Credentials are stored with a 5-minute
+`shuvgrok` processes cannot lose a rotation. Credentials are stored with a 5-minute
 early-expiry margin.
 
 ### Sign out
 
 ```bash
-grok logout --provider anthropic
-grok logout --provider openai-codex
+shuvgrok logout --provider anthropic
+shuvgrok logout --provider openai-codex
 ```
 
 ### Billing caveat
@@ -122,10 +133,10 @@ For CI/CD, automation, or environments without browser access, use an API key fr
 
 ```bash
 export XAI_API_KEY="xai-..."
-grok
+shuvgrok
 ```
 
-Grok uses the API key as a fallback when no session token is active. If you have already signed in interactively, the stored session token takes precedence. To fall back to the API key, run `grok logout` or delete `~/.grok/auth.json`.
+Grok uses the API key as a fallback when no session token is active. If you have already signed in interactively, the stored session token takes precedence. To fall back to the API key, run `shuvgrok logout` or delete `~/.grok/auth.json`.
 
 ---
 
@@ -163,7 +174,7 @@ You can also override the API endpoint to point at your own proxy:
 export GROK_CLI_CHAT_PROXY_BASE_URL="https://grok-proxy.acme.com/v1"
 ```
 
-### 3. Run `grok`
+### 3. Run `shuvgrok`
 
 The CLI discovers endpoints via `{issuer}/.well-known/openid-configuration`, opens the IdP login page, and stores tokens in `~/.grok/auth.json`. Tokens auto-refresh silently via the stored `refresh_token`.
 
@@ -263,7 +274,7 @@ same JSON fields (such as `issuer`) on every invocation, including refreshes.
   rejected. Nobody is watching. stdin is closed, your stderr is swallowed, and
   the binary is given a few seconds before it is killed. Mint silently or exit
   non-zero — never block.
-- **Unset — a sign-in.** `grok login`, the sign-in screen, or the escalation
+- **Unset — a sign-in.** `shuvgrok login`, the sign-in screen, or the escalation
   Grok performs when a headless run couldn't mint. A user is waiting, your
   stderr reaches them, and you have 300 seconds — enough for a browser round
   trip or a device code.
@@ -323,7 +334,7 @@ goes to `~/.grok/leader.log` rather than to you.
 For headless environments (SSH sessions, Docker containers, remote VMs) where no browser is available locally:
 
 ```bash
-grok login --device-auth    # or: grok login --device-code
+shuvgrok login --device-auth    # or: shuvgrok login --device-code
 ```
 
 This prints a URL and code to the terminal. Open the URL on any device, enter the code, and complete authentication. Grok polls until the login is confirmed.
@@ -407,7 +418,7 @@ Set `RUST_LOG` to control the verbosity of the file log and headless stderr outp
 In the TUI, set `GROK_LOG_FILE` to an absolute path to write logs to that file:
 
 ```bash
-GROK_LOG_FILE=/tmp/grok.log RUST_LOG=debug grok
+GROK_LOG_FILE=/tmp/grok.log RUST_LOG=debug shuvgrok
 tail -f /tmp/grok.log
 ```
 
@@ -416,7 +427,7 @@ tail -f /tmp/grok.log
 In headless mode, logs go to stderr. Redirect them to a file:
 
 ```bash
-RUST_LOG=debug grok -p "hello" 2> /tmp/grok.log
+RUST_LOG=debug shuvgrok -p "hello" 2> /tmp/grok.log
 ```
 
 ### Common log messages
@@ -431,10 +442,10 @@ RUST_LOG=debug grok -p "hello" 2> /tmp/grok.log
 
 ### Common fixes
 
-- **"Authentication failed"** -- Run `grok logout` to clear cached credentials, then `grok login` to sign in again.
+- **"Authentication failed"** -- Run `shuvgrok logout` to clear cached credentials, then `shuvgrok login` to sign in again.
 - **Token expires too quickly** -- Set `auth_token_ttl` or return `expires_in` in your auth provider's JSON output.
 - **OIDC redirect fails** -- Ensure your IdP allows loopback redirect URIs (`http://127.0.0.1/callback`).
 - **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.
 - **Alternative-provider login says the loopback port is busy** -- Anthropic (`53692`) and OpenAI (`1455`) use fixed, pre-registered ports. Free the port, or complete the login by pasting the callback URL / code into the terminal.
-- **"Missing chatgpt_account_id"** -- The OpenAI access token carried no ChatGPT account claim. Confirm the account has an active ChatGPT Plus/Pro subscription, then run `grok login --provider openai-codex` again.
-- **An Anthropic or OpenAI model is listed but not selectable** -- You are not signed in to that provider. Run `grok login --provider anthropic` or `grok login --provider openai-codex`.
+- **"Missing chatgpt_account_id"** -- The OpenAI access token carried no ChatGPT account claim. Confirm the account has an active ChatGPT Plus/Pro subscription, then run `shuvgrok login --provider openai-codex` again.
+- **An Anthropic or OpenAI model is listed but not selectable** -- You are not signed in to that provider. Run `shuvgrok login --provider anthropic` or `shuvgrok login --provider openai-codex`.

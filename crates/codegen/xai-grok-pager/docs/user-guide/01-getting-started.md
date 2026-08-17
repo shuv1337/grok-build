@@ -1,6 +1,6 @@
 # Getting Started
 
-Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
+ShuvGrok is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
 
 You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
 
@@ -37,13 +37,13 @@ The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your Us
 Verify the installation:
 
 ```bash
-grok --version
+shuvgrok --version
 ```
 
 Update to the latest version at any time:
 
 ```bash
-grok update
+shuvgrok update
 ```
 
 ---
@@ -53,7 +53,7 @@ grok update
 Start Grok by running:
 
 ```bash
-grok
+shuvgrok
 ```
 
 On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
@@ -62,10 +62,42 @@ If you prefer API key authentication (e.g., for CI/CD or environments without a 
 
 ```bash
 export XAI_API_KEY="xai-..."
-grok
+shuvgrok
 ```
 
 See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
+
+### Using Claude or ChatGPT
+
+ShuvGrok is not Grok-only. If you have a **Claude Pro/Max** or **ChatGPT
+Plus/Pro** subscription, you can drive those models from the same client, on
+your existing plan — no API key, no per-token billing.
+
+Sign in from the TUI:
+
+```
+/login-claude     # Claude Pro / Max
+/login-codex      # ChatGPT Plus / Pro
+```
+
+or from the shell:
+
+```bash
+shuvgrok login --provider anthropic
+shuvgrok login --provider openai-codex
+```
+
+Then pick a model with `/model` — Claude and GPT entries appear in the list
+once that provider is signed in, and `/usage` shows how much of each
+subscription's quota you have left.
+
+**A model only appears in `/model` after its provider is signed in.** If the
+picker shows nothing but Grok, that means Claude and ChatGPT are simply not
+connected yet, not that they are unsupported. `/login` on its own lists every
+provider.
+
+See [Authentication](02-authentication.md#alternative-providers-claude-promax-chatgpt-pluspro)
+for details, and [Custom Models](11-custom-models.md) for the model catalogs.
 
 ---
 
@@ -102,7 +134,7 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore` 
 By default, Grok asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
 
 - Press `Ctrl+O` to toggle always-approve mode
-- Use the `--yolo` flag at launch: `grok --yolo`
+- Use the `--yolo` flag at launch: `shuvgrok --yolo`
 - Type `/always-approve` in the prompt to toggle the mode
 
 ---
@@ -115,7 +147,7 @@ Every conversation is a **session**. Sessions are automatically saved to `~/.gro
 
 - Start a new session: `Ctrl+N` or `/new`
 - Resume a previous session: `/resume` in the TUI, or `--resume <ID>` from the CLI
-- Continue the most recent session: `grok -c`
+- Continue the most recent session: `shuvgrok -c`
 
 ### Scrollback
 
@@ -165,44 +197,44 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
 
 ```bash
 # Launch the interactive TUI and submit an initial prompt as the first turn
-grok "fix the failing auth test and run it"
+shuvgrok "fix the failing auth test and run it"
 
 # Initial prompt in a new git worktree. Use --worktree=<name> (with `=`) so the
-# prompt isn't swallowed as the worktree name — `grok -w "refactor module X"`
+# prompt isn't swallowed as the worktree name — `shuvgrok -w "refactor module X"`
 # would treat "refactor module X" as the worktree label, not the prompt.
-grok --worktree=feat "refactor module X"
+shuvgrok --worktree=feat "refactor module X"
 
 # Base the worktree on a specific branch (e.g. main) instead of the current HEAD:
-grok -w --ref main "implement feature from main"
+shuvgrok -w --ref main "implement feature from main"
 
 
 # Start in a specific project directory
-grok --cwd ~/projects/my-app
+shuvgrok --cwd ~/projects/my-app
 
 # Add project-specific rules
-grok --rules "Always use TypeScript. Prefer functional components."
+shuvgrok --rules "Always use TypeScript. Prefer functional components."
 
 # Auto-approve all tool executions
-grok --yolo
+shuvgrok --yolo
 
 # Use a specific model
-grok -m grok-build
+shuvgrok -m grok-build
 
 # Resume a previous session
-grok --resume <session-id>
+shuvgrok --resume <session-id>
 
 # Continue the most recent session
-grok -c
+shuvgrok -c
 
-# Experimental scrollback-native render mode. Sticky: plain `grok` reopens in
+# Experimental scrollback-native render mode. Sticky: plain `shuvgrok` reopens in
 # the mode last chosen via --minimal/--fullscreen (or /minimal//fullscreen).
-grok --minimal
+shuvgrok --minimal
 
 # Back to the standard fullscreen TUI (and make it sticky again)
-grok --fullscreen
+shuvgrok --fullscreen
 
 # Headless mode (for scripts)
-grok -p "Explain this codebase"
+shuvgrok -p "Explain this codebase"
 ```
 
 ---
@@ -212,7 +244,7 @@ grok -p "Explain this codebase"
 Run Grok non-interactively for scripting, CI/CD, and automation:
 
 ```bash
-grok -p "Your prompt here"
+shuvgrok -p "Your prompt here"
 ```
 
 Output formats:
@@ -226,7 +258,7 @@ Output formats:
 Example CI/CD usage:
 
 ```bash
-grok -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
+shuvgrok -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
 ```
 
 ---

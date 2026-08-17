@@ -37,6 +37,67 @@ fn normalize_provider(raw: &str) -> Option<&'static str> {
     }
 }
 
+/// One-step sign-in for a single provider (`/login-claude`, `/login-codex`).
+///
+/// `/login` alone requires picking a provider, which only helps someone who
+/// already knows the providers exist. The first thing a new user actually does
+/// is search the slash menu for the thing they want — reported from the field:
+/// "i searched /claude and /codex first but didn't find any indicator". Nothing
+/// matched, because the only route was a `/login` *argument*, and the menu
+/// cannot search a command's arguments.
+///
+/// These give each provider a name of its own, plus aliases so the obvious
+/// searches (`claude`, `codex`, `chatgpt`, `gpt`, `anthropic`) all land
+/// somewhere useful. Aliases get their own dropdown rows, so the search that
+/// previously came up empty now shows the description.
+pub struct ProviderLoginCommand {
+    name: &'static str,
+    aliases: &'static [&'static str],
+    description: &'static str,
+    /// Canonical provider id handed to [`Action::LoginWithProvider`].
+    provider: &'static str,
+}
+
+pub const LOGIN_CLAUDE: ProviderLoginCommand = ProviderLoginCommand {
+    name: "login-claude",
+    aliases: &["claude", "anthropic", "login-anthropic"],
+    description: "Sign in with your Claude Pro/Max subscription",
+    provider: "anthropic",
+};
+
+pub const LOGIN_CODEX: ProviderLoginCommand = ProviderLoginCommand {
+    name: "login-codex",
+    aliases: &["codex", "chatgpt", "gpt", "login-chatgpt"],
+    description: "Sign in with your ChatGPT Plus/Pro subscription",
+    provider: "openai-codex",
+};
+
+impl SlashCommand for ProviderLoginCommand {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn aliases(&self) -> &[&str] {
+        self.aliases
+    }
+
+    fn description(&self) -> &str {
+        self.description
+    }
+
+    fn usage(&self) -> &str {
+        self.name
+    }
+
+    fn takes_args(&self) -> bool {
+        false
+    }
+
+    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
+        CommandResult::Action(Action::LoginWithProvider(self.provider.to_string()))
+    }
+}
+
 pub struct LoginCommand;
 
 impl SlashCommand for LoginCommand {
@@ -126,6 +187,47 @@ mod tests {
         assert_eq!(normalize_provider("grok"), Some("xai"));
         assert_eq!(normalize_provider("nope"), None);
         assert_eq!(normalize_provider(""), None);
+    }
+
+    /// The searches a new user actually types must reach a provider sign-in.
+    /// Reported from the field: "/claude" and "/codex" matched nothing, because
+    /// the only route was a `/login` argument and the menu cannot search
+    /// arguments.
+    #[test]
+    fn obvious_provider_searches_resolve_to_a_login() {
+        for (query, expected) in [
+            ("claude", "anthropic"),
+            ("anthropic", "anthropic"),
+            ("login-claude", "anthropic"),
+            ("codex", "openai-codex"),
+            ("chatgpt", "openai-codex"),
+            ("gpt", "openai-codex"),
+            ("login-codex", "openai-codex"),
+        ] {
+            let cmd = [&LOGIN_CLAUDE, &LOGIN_CODEX]
+                .into_iter()
+                .find(|c| c.name() == query || c.aliases().contains(&query))
+                .unwrap_or_else(|| panic!("no provider login reachable by {query:?}"));
+            assert_eq!(
+                cmd.provider, expected,
+                "{query:?} routed to the wrong provider"
+            );
+        }
+    }
+
+    /// These take no arguments: the whole point is that one keystroke-path
+    /// signs in, with no second decision to discover.
+    #[test]
+    fn provider_logins_are_argument_free_and_name_a_real_provider() {
+        for cmd in [&LOGIN_CLAUDE, &LOGIN_CODEX] {
+            assert!(!cmd.takes_args(), "{} must not require args", cmd.name());
+            assert_eq!(
+                normalize_provider(cmd.provider),
+                Some(cmd.provider),
+                "{} targets a provider /login does not accept",
+                cmd.name()
+            );
+        }
     }
 
     /// Every advertised dropdown id must be one `run` accepts, or the picker

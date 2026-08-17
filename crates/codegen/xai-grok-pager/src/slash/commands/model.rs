@@ -23,7 +23,11 @@ impl SlashCommand for ModelCommand {
     }
 
     fn description(&self) -> &str {
-        "Switch the active model"
+        // Names the providers because the list itself cannot: a model only
+        // appears once its provider is signed in, so a Grok-only user opening
+        // this sees Grok and concludes that is all there is. Reported from the
+        // field as "model gives nothing but grok".
+        "Switch the active model (Grok, Claude, ChatGPT)"
     }
 
     fn session_scoped(&self) -> bool {

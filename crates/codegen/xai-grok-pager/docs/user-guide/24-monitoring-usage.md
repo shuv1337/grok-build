@@ -48,7 +48,7 @@ export OTEL_LOGS_EXPORTER=otlp
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf  # or grpc
 export OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.corp.example:4318
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <collector-token>"
-grok
+shuvgrok
 ```
 
 `GROK_EXTERNAL_OTEL=1` alone enables **nothing** — you must also select at
@@ -112,7 +112,7 @@ There is deliberately no `headers` key: supply collector auth via
 `OTEL_EXPORTER_OTLP_HEADERS` so tokens are never stored on disk.
 
 Managed deployments can additionally enable org-wide telemetry by distributing
-the `[telemetry]` `otel_*` keys through `grok setup` managed config /
+the `[telemetry]` `otel_*` keys through `shuvgrok setup` managed config /
 requirements pins, or force-disable it fleet-wide with the same local config
 layers (`external_otel_disabled`, content-gate locks).
 
@@ -137,7 +137,7 @@ A fleet policy that arrives afterwards still applies; it can only ever
 something your local configuration did not.
 
 If your collector receives nothing at all, check the debug log
-(`grok --debug`) for `external otel:` lines — they record whether the stream
+(`shuvgrok --debug`) for `external otel:` lines — they record whether the stream
 resolved its configuration, and whether it is exporting or suppressed.
 
 ## Resource attributes
