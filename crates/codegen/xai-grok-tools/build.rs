@@ -118,21 +118,7 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
         "https://github.com/sharkdp/fd/releases/download/v{ver}/fd-v{ver}-{asset_triple}.tar.gz"
     );
 
-    let bytes: Vec<u8> = {
-        let resp = reqwest::blocking::get(&url).map_err(|e| {
-            format!(
-                "Failed to download fd: {e}\nSet GROK_TOOLS_BUNDLE_FD_PATH to a local fd for offline builds."
-            )
-        })?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "HTTP {} downloading fd. Set GROK_TOOLS_BUNDLE_FD_PATH for offline builds.",
-                resp.status()
-            )
-            .into());
-        }
-        resp.bytes()?.to_vec()
-    };
+    let bytes: Vec<u8> = download_release_asset(&url, "fd", "GROK_TOOLS_BUNDLE_FD_PATH")?;
 
     // Verify the tarball against the pinned per-asset hash before unpacking.
     let expected_sha = FD_TARBALL_SHA256
@@ -179,6 +165,61 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Fetch a release asset, retrying the failures GitHub hands out under load.
+///
+/// A single unauthenticated GET fails a whole release build at random: observed
+/// as `HTTP 403 Forbidden` on exactly one of six cross-compile targets, while
+/// the other five downloaded the same asset fine. GitHub rate-limits by source
+/// IP, and CI runners share those.
+///
+/// Retries 403/429/5xx with exponential backoff and sends a User-Agent, which
+/// GitHub treats less harshly than a client sending none. A 404 is a genuine
+/// mistake (wrong version or asset name) and fails immediately.
+fn download_release_asset(
+    url: &str,
+    what: &str,
+    offline_env: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    const ATTEMPTS: u32 = 4;
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("shuvgrok-build")
+        .timeout(std::time::Duration::from_secs(180))
+        .build()?;
+
+    let mut last = String::from("no attempt made");
+    for attempt in 1..=ATTEMPTS {
+        match client.get(url).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(resp.bytes()?.to_vec()),
+            Ok(resp) => {
+                let status = resp.status();
+                last = format!("HTTP {status}");
+                let retryable =
+                    status.is_server_error() || matches!(status.as_u16(), 403 | 408 | 429);
+                if !retryable {
+                    break;
+                }
+            }
+            Err(e) => last = e.to_string(),
+        }
+        if attempt < ATTEMPTS {
+            let backoff = std::time::Duration::from_secs(1 << attempt);
+            println!(
+                "cargo:warning={what} download attempt {attempt}/{ATTEMPTS} failed ({last}); \
+                 retrying in {}s",
+                backoff.as_secs()
+            );
+            std::thread::sleep(backoff);
+        }
+    }
+
+    Err(format!(
+        "{last} downloading {what} after {ATTEMPTS} attempts. \
+         Set {offline_env} to a local binary for offline builds."
+    )
+    .into())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -304,22 +345,7 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         t = asset_triple
     );
 
-    let bytes: Vec<u8> = {
-        let resp = reqwest::blocking::get(&url).map_err(|e| {
-            format!(
-                "Failed to download ripgrep: {}\nSet GROK_TOOLS_BUNDLE_RG_PATH to a local rg for offline builds.",
-                e
-            )
-        })?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "HTTP {} downloading ripgrep. Set GROK_TOOLS_BUNDLE_RG_PATH for offline builds.",
-                resp.status()
-            )
-            .into());
-        }
-        resp.bytes()?.to_vec()
-    };
+    let bytes: Vec<u8> = download_release_asset(&url, "ripgrep", "GROK_TOOLS_BUNDLE_RG_PATH")?;
 
     let gz = flate2::read::GzDecoder::new(&bytes[..]);
     let mut ar = tar::Archive::new(gz);
