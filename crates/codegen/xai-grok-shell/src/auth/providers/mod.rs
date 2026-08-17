@@ -43,10 +43,23 @@ impl LiveProviders {
         let Ok(store) = crate::auth::read_auth_json(&path) else {
             return Self::default();
         };
+        // A lapsed access token is not a lapsed *subscription*. Access tokens
+        // last hours; the refresh token behind them lasts far longer, and the
+        // pre-turn hook redeems it on first use.
+        //
+        // Requiring an unexpired access token here deadlocked: the models
+        // vanished, a vanished model can never be selected, and only selecting
+        // one triggers a refresh — so the credential could never recover and
+        // the user had to re-run the whole OAuth flow with a perfectly good
+        // refresh token sitting on disk.
         let live = |scope: &str| {
-            store
-                .get(scope)
-                .is_some_and(|auth| !crate::auth::is_expired(auth))
+            store.get(scope).is_some_and(|auth| {
+                !crate::auth::is_expired(auth)
+                    || auth
+                        .refresh_token
+                        .as_deref()
+                        .is_some_and(|t| !t.trim().is_empty())
+            })
         };
         Self {
             anthropic: live("anthropic::oauth"),

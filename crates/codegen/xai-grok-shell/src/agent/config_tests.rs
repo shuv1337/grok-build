@@ -6635,6 +6635,57 @@ fn slug_propagation_noop_when_no_donor() {
         "no donor exists, context_window should stay at parser default"
     );
 }
+/// A provider whose access token has lapsed but which still holds a refresh
+/// token must keep its models visible.
+///
+/// Hiding them deadlocked: a hidden model cannot be selected, and only
+/// selecting one triggers a refresh, so the credential could never recover and
+/// the user had to redo the whole OAuth flow with a usable refresh token on
+/// disk. Access tokens last hours and expire constantly; that is not the same
+/// event as losing the subscription.
+#[test]
+fn expired_but_refreshable_provider_credentials_stay_live() {
+    use crate::auth::{LiveProviders, SubscriptionProvider};
+    use chrono::Utc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json");
+
+    let mut expired = crate::auth::GrokAuth::default();
+    expired.expires_at = Some(Utc::now() - chrono::Duration::hours(6));
+    expired.refresh_token = Some("refresh-me".to_string());
+
+    let mut expired_unrecoverable = expired.clone();
+    expired_unrecoverable.refresh_token = None;
+
+    let write = |entries: Vec<(&str, &crate::auth::GrokAuth)>| {
+        let store: std::collections::HashMap<String, crate::auth::GrokAuth> = entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        std::fs::write(&path, serde_json::to_string(&store).unwrap()).unwrap();
+    };
+
+    // `detect` falls back to `<grok_home>/auth.json`, so pointing it at the
+    // temp dir avoids mutating GROK_AUTH_PATH and racing parallel tests.
+    write(vec![("anthropic::oauth", &expired)]);
+    assert!(
+        LiveProviders::detect(dir.path()).has(SubscriptionProvider::Anthropic),
+        "a lapsed access token with a refresh token is still a live subscription"
+    );
+
+    // Nothing left to redeem: this one really does require signing in again.
+    write(vec![("anthropic::oauth", &expired_unrecoverable)]);
+    assert!(
+        !LiveProviders::detect(dir.path()).has(SubscriptionProvider::Anthropic),
+        "an expired credential with no refresh token is not recoverable"
+    );
+
+    // Absence still means absence.
+    write(vec![]);
+    assert!(!LiveProviders::detect(dir.path()).has(SubscriptionProvider::Anthropic));
+}
+
 /// Subscription-provider models are gated on *their own* credential, not on
 /// the xAI session token. Keying them off `is_session_auth` was wrong in both
 /// directions: Claude models appeared for an xAI user who had never signed in

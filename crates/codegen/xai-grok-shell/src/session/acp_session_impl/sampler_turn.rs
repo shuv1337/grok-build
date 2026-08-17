@@ -271,6 +271,48 @@ impl SessionActor {
         creds.api_key = Some(new_key);
         self.chat_state_handle.update_credentials(creds);
     }
+    /// Pre-turn arm for a **subscription** provider model (Claude, Codex).
+    ///
+    /// Their credential lives in a per-provider [`AuthManager`] keyed by its
+    /// own `auth.json` scope, so the session's own refresh never touches it
+    /// and the chat-state key just goes stale. `auth()` refreshes when needed
+    /// and persists, and the fresh key is published through
+    /// [`Self::set_chat_api_key`], the single writer of chat-state credentials.
+    ///
+    /// Fail-soft: a refresh failure leaves the existing key in place so the
+    /// turn produces a real API error rather than being silently cancelled.
+    async fn refresh_subscription_token_pre_turn(
+        &self,
+        provider: crate::auth::SubscriptionProvider,
+        current_key: Option<&str>,
+    ) {
+        let registry = crate::auth::AuthRegistry::new(
+            &crate::util::grok_home::grok_home(),
+            &crate::auth::GrokComConfig::default(),
+        );
+        let Some(manager) = registry.manager(provider) else {
+            return;
+        };
+        match manager.auth().await {
+            Ok(auth) => {
+                if current_key != Some(auth.key.as_str()) {
+                    tracing::info!(
+                        provider = provider.id(),
+                        "subscription token refreshed pre-turn"
+                    );
+                    self.set_chat_api_key(auth.key).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = provider.id(),
+                    error = %e,
+                    "subscription token refresh failed; keeping the existing key"
+                );
+            }
+        }
+    }
+
     /// Pre-turn arm for a provider-backed model: mint on a cold cache,
     /// re-mint near expiry, and adopt a rotation chat-state missed. No-op
     /// when `current_key` is already the fresh cached token.
@@ -1323,6 +1365,18 @@ impl SessionActor {
                 &current_model_id,
             )
             .await;
+            return;
+        }
+        // Subscription providers keep their credential in their own
+        // AuthManager, not in this session's, so neither the refresh above nor
+        // the JWT check below can see it. Without this arm a Claude or Codex
+        // token was simply never refreshed.
+        if let Some(provider) =
+            crate::agent::config::resolve_model_subscription_provider(&current_model_id)
+                .filter(|p| *p != crate::auth::SubscriptionProvider::Xai)
+        {
+            self.refresh_subscription_token_pre_turn(provider, current_key.as_deref())
+                .await;
             return;
         }
         let Some(ref key) = current_key else { return };

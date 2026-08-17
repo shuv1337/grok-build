@@ -57,11 +57,13 @@ impl AuthRegistry {
             .is_some_and(|m| m.current_wire_valid().is_some())
     }
 
-    pub fn start_proactive_refresh_all(&self, cancel: CancellationToken) {
-        for manager in self.managers.values() {
-            manager.start_proactive_refresh(cancel.clone());
-        }
-    }
+    // Deliberately no `start_proactive_refresh_all`. One existed, was never
+    // called from anywhere, and read as though provider tokens were being kept
+    // fresh in the background — which is exactly the belief that let the
+    // expiry deadlock survive review. Subscription tokens are refreshed on the
+    // pre-turn path (`refresh_subscription_token_pre_turn`), at the moment a
+    // fresh token is actually needed. If a background refresher is wanted
+    // later, wire it to a caller in the same change.
 }
 
 #[cfg(test)]
