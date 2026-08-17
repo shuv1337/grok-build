@@ -292,18 +292,36 @@ jobs:
         run: |
           set -euo pipefail
           # No CHANGELOG.md in this repo: let GitHub generate notes from commits.
-          # Prefer the resolved commit SHA; tags are invalid for target_commitish.
-          target_sha="$(git rev-parse HEAD)"
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release edit "${RELEASE_TAG}" \
               --title "${RELEASE_TAG}" \
               --draft=false
+            exit 0
+          fi
+
+          # Pass a target commitish ONLY when the tag does not already exist.
+          #
+          # This repo is a fork, and GitHub refuses release creation on a fork
+          # with an explicit target_commitish — HTTP 403 "Resource not
+          # accessible by integration", even though the job is granted
+          # contents: write and the log confirms it. That is what broke v1.0.5.
+          # v1.0.4 escaped only because the tag and the branch head were then
+          # the same commit.
+          #
+          # The tag-push trigger means the tag already exists and already pins
+          # the commit, so the target was redundant on the normal path. It is
+          # still needed for a workflow_dispatch naming a tag that has not been
+          # created yet.
+          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            gh release create "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --generate-notes
           else
             gh release create "${RELEASE_TAG}" \
               --title "${RELEASE_TAG}" \
               --generate-notes \
-              --target "${target_sha}"
+              --target "$(git rev-parse HEAD)"
           fi
 
   notify-discord:
