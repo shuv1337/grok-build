@@ -1,7 +1,9 @@
 # Handoff — ShuvGrok fork state
 
 Updated 2026-08-17 (PDT). `main` is at `623e510`, pushed to `shuv1337/shuvgrok`.
-Latest published release is **v1.0.4**; v1.0.5 was tagged and is mid-flight.
+Latest published release is **v1.0.5**: all 7 npm packages, GitHub release, and
+the Discord post are live, and the npm trusted-publisher OIDC exchange is now
+proven under the renamed repository.
 
 ## Where things stand
 
@@ -15,6 +17,9 @@ On top of upstream `eb267fef`:
 | `63cf6bb` | `/login-claude` + `/login-codex`, docs say `shuvgrok` |
 | `25b6da2b` | Expired-provider refresh deadlock fixed |
 | `623e510` | Retry build-time release-asset downloads |
+| `06a88b3` | Cache + verify build-time tool assets |
+| `7369023` | No target commit when creating a release on a fork |
+| `ecb5d46` | npm launcher stops running the pre-upgrade binary |
 
 Read the commit messages first — they carry the reasoning and are not
 duplicated here. Then [`FORK.md`](../FORK.md) for the identity/compatibility
@@ -88,6 +93,21 @@ duplicate the script's asset-selection logic.
 
 Note the bundling only runs when `PROFILE=release`; a debug build silently skips
 it, so exercise this path with `cargo build --release -p xai-grok-tools`.
+
+## Two traps specific to this repo being a fork
+
+**Release creation.** `gh release create --target <sha>` returns HTTP 403
+"Resource not accessible by integration" on a fork, even with `contents: write`
+granted — the run log will confirm the grant, so the error is misleading. Proof
+it is not a permission problem: the `gh release edit` path succeeds with the
+same token. The workflow now passes a target only when the tag does not yet
+exist. Do not "fix" a future 403 here by widening permissions; that was tried
+and changed nothing.
+
+**Reading CI logs.** `gh run view --log-failed` refuses while any job in the run
+is still in progress, which is exactly when a diagnosis is wanted. Use
+`gh api repos/<owner>/<repo>/actions/jobs/<job_id>/logs --allow-escape-sequences`
+instead; it works immediately.
 
 ## What is and is not verified
 
