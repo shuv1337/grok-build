@@ -712,6 +712,16 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::SchedulerCreateTool>();
         b.register::<grok_build::SchedulerDeleteTool>();
         b.register::<grok_build::SchedulerListTool>();
+        b.register::<grok_build::ListAppsTool>();
+        b.register::<grok_build::GetAppStateTool>();
+        b.register::<grok_build::ClickTool>();
+        b.register::<grok_build::DragTool>();
+        b.register::<grok_build::PerformSecondaryActionTool>();
+        b.register::<grok_build::PressKeyTool>();
+        b.register::<grok_build::ScrollTool>();
+        b.register::<grok_build::SelectTextTool>();
+        b.register::<grok_build::SetValueTool>();
+        b.register::<grok_build::TypeTextTool>();
         b.register::<codex::apply_patch::ApplyPatchTool>();
         b.register::<codex::list_dir::CodexListDirTool>();
         b.register::<codex::grep_files::CodexGrepFilesTool>();
@@ -2924,6 +2934,10 @@ mod tests {
             "GrokBuild:grep",
             "GrokBuild:get_terminal_command_output",
             "GrokBuild:kill_terminal_command",
+            "GrokBuild:list_apps",
+            "GrokBuild:get_app_state",
+            "GrokBuild:click",
+            "GrokBuild:type_text",
         ] {
             assert!(
                 builder.has_tool_id(id),
@@ -2952,6 +2966,9 @@ mod tests {
             ("GrokBuild:search_replace", ToolKind::Edit),
             ("GrokBuild:grep", ToolKind::Search),
             ("GrokBuild:list_dir", ToolKind::List),
+            ("GrokBuild:list_apps", ToolKind::List),
+            ("GrokBuild:get_app_state", ToolKind::Read),
+            ("GrokBuild:click", ToolKind::Other),
         ] {
             assert_eq!(
                 kinds.get(id),

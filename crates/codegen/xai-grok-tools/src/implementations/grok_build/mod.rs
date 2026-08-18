@@ -24,6 +24,7 @@ pub mod monitor;
 pub mod read_file;
 pub mod scheduler;
 pub mod search_replace;
+pub mod sky;
 pub(crate) mod storage;
 pub mod task;
 pub mod task_output;
@@ -56,6 +57,10 @@ pub use scheduler::create::{
 pub use scheduler::delete::{SCHEDULER_DELETE_TOOL_NAME, SchedulerDeleteTool};
 pub use scheduler::list::SchedulerListTool;
 pub use search_replace::SearchReplaceTool;
+pub use sky::{
+    ClickTool, DragTool, GetAppStateTool, ListAppsTool, PerformSecondaryActionTool, PressKeyTool,
+    ScrollTool, SelectTextTool, SetValueTool, TypeTextTool,
+};
 pub use task::{TaskTool, is_task_tool_id};
 pub use task_output::{GetTerminalCommandOutputTool, TaskOutputTool, WaitTasksTool};
 pub use todo::TodoWriteTool;

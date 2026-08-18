@@ -167,6 +167,28 @@ fn wait_tasks_tool_config() -> ToolConfig {
 fn kill_task_tool_config() -> ToolConfig {
     ToolConfig::from(&grok_build::KillTaskTool).with_name("kill_command_or_subagent")
 }
+
+fn sky_desktop_tools() -> Vec<ToolConfig> {
+    vec![
+        (&grok_build::ListAppsTool).into(),
+        (&grok_build::GetAppStateTool).into(),
+        (&grok_build::ClickTool).into(),
+        (&grok_build::DragTool).into(),
+        (&grok_build::PerformSecondaryActionTool).into(),
+        (&grok_build::PressKeyTool).into(),
+        (&grok_build::ScrollTool).into(),
+        (&grok_build::SelectTextTool).into(),
+        (&grok_build::SetValueTool).into(),
+        (&grok_build::TypeTextTool).into(),
+    ]
+}
+
+fn sky_desktop_read_tools() -> Vec<ToolConfig> {
+    vec![
+        (&grok_build::ListAppsTool).into(),
+        (&grok_build::GetAppStateTool).into(),
+    ]
+}
 /// Complete workspace-executable toolset for hub registration.
 ///
 /// Extends `default_grok_build_toolset()` with tools that are dynamically
@@ -281,7 +303,10 @@ fn default_grok_build_toolset() -> ToolServerConfig {
             (&use_tool::UseTool).into(),
             (&grok_build::UpdateGoalTool).into(),
             (&grok_build::WorkflowTool).into(),
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -302,7 +327,10 @@ fn grok_build_concise_toolset() -> ToolServerConfig {
             (&grok_build::MonitorTool).into(),
             (&grok_build::UpdateGoalTool).into(),
             (&grok_build::WorkflowTool).into(),
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -333,6 +361,7 @@ pub fn grok_build_hashline_toolset(
         (&grok_build::UpdateGoalTool).into(),
         (&grok_build::WorkflowTool).into(),
     ]);
+    tools.extend(sky_desktop_tools());
     ToolServerConfig {
         tools,
         behavior_preset: None,
@@ -368,7 +397,10 @@ fn explore_toolset() -> ToolServerConfig {
             (&grok_build::ReadFileTool).into(),
             (&grok_build::ListDirTool).into(),
             (&grok_build::GrepTool).into(),
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_read_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -386,7 +418,10 @@ fn plan_toolset() -> ToolServerConfig {
             // (&grok_build::SkillTool).into(),
             (&grok_build::TodoWriteTool).into(),
             // search_replace + run_terminal_command intentionally omitted (read-only)
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_read_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -421,7 +456,10 @@ fn grok_build_plan_toolset() -> ToolServerConfig {
             (&grok_build::EnterPlanModeTool).into(),
             (&grok_build::ExitPlanModeTool).into(),
             (&grok_build::AskUserQuestionTool).into(),
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -506,7 +544,10 @@ fn grok_build_plan_no_subagents_toolset() -> ToolServerConfig {
             (&grok_build::EnterPlanModeTool).into(),
             (&grok_build::ExitPlanModeTool).into(),
             (&grok_build::AskUserQuestionTool).into(),
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -537,7 +578,10 @@ fn grok_build_ask_user_toolset() -> ToolServerConfig {
             (&grok_build::WorkflowTool).into(),
             // Ask user tool (without plan mode)
             (&grok_build::AskUserQuestionTool).into(),
-        ],
+        ]
+        .into_iter()
+        .chain(sky_desktop_tools())
+        .collect(),
         behavior_preset: None,
     }
 }
@@ -2399,6 +2443,22 @@ description: Test default tool config
                 .map(|tc| &tc.id)
                 .collect::<Vec<_>>()
         );
+        for id in [
+            "GrokBuild:list_apps",
+            "GrokBuild:get_app_state",
+            "GrokBuild:click",
+            "GrokBuild:type_text",
+        ] {
+            assert!(
+                def.tool_config.tools.iter().any(|tc| tc.id == id),
+                "default grok-build toolset should include {id}, got {:?}",
+                def.tool_config
+                    .tools
+                    .iter()
+                    .map(|tc| &tc.id)
+                    .collect::<Vec<_>>()
+            );
+        }
     }
     #[test]
     fn test_from_json_with_prompt_body() {
